@@ -11,7 +11,10 @@ use serde::{Serialize, de::DeserializeOwned};
 use std::{
     io::{Read, Write},
     net::{Shutdown, TcpStream},
-    sync::{Arc, Condvar, Mutex},
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 use zeroize::Zeroizing;
@@ -23,6 +26,30 @@ const HANDSHAKE_LIMIT: usize = 2048;
 pub const FRAME_LIMIT: usize = 1_048_576;
 const RECORD: usize = 60_000;
 const AUTH_TIMEOUT: Duration = Duration::from_secs(15);
+static AUTH_WORK: AtomicUsize = AtomicUsize::new(0);
+struct AuthPermit;
+impl AuthPermit {
+    fn acquire() -> Result<Self> {
+        let end = Instant::now() + AUTH_TIMEOUT;
+        loop {
+            if AUTH_WORK
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                    (n < 4).then_some(n + 1)
+                })
+                .is_ok()
+            {
+                return Ok(Self);
+            }
+            ensure!(Instant::now() < end, "authentication concurrency limit");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+impl Drop for AuthPermit {
+    fn drop(&mut self) {
+        AUTH_WORK.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 pub fn password() -> Result<String> {
     let mut result = String::with_capacity(29);
@@ -75,6 +102,7 @@ pub struct Credential {
 impl Credential {
     pub fn new(password: &str) -> Result<Self> {
         validate_password(password)?;
+        let _permit = AuthPermit::acquire()?;
         let setup = ServerSetup::<Suite>::new(&mut OsRng);
         let start = ClientRegistration::<Suite>::start(&mut OsRng, password.as_bytes())?;
         let response = ServerRegistration::start(&setup, start.message, CONTEXT)?;
@@ -131,6 +159,7 @@ impl Channel {
         sending: bool,
     ) -> Result<Self> {
         validate_password(password)?;
+        let _permit = AuthPermit::acquire()?;
         let end = Instant::now() + AUTH_TIMEOUT;
         // A wall-clock watchdog prevents slow trickle reads extending read_exact indefinitely.
         let deadline_socket = socket.try_clone()?;

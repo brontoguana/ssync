@@ -16,6 +16,7 @@ spec.loader.exec_module(lab)
 PASSWORD = '1234-5678-9ABC-DEFG-HJKL-MNPQ'
 RESULTS = []
 SEQ = 0
+STARTED = []
 BINARY = ROOT / 'target/x86_64-unknown-linux-musl/release/ssync'
 
 
@@ -39,10 +40,12 @@ p.mkdir(mode=0o700)
 
 def command(peer, args, password=PASSWORD, env=None, timeout=60):
     vars = {'SSYNC_PASSWORD': password, **(env or {})}
-    out = execute(peer, '''import json,os,subprocess,sys
+    out = execute(peer, '''import json,os,subprocess,sys,resource,time
 args=json.loads(sys.argv[1]);env=os.environ.copy();env.update(json.loads(sys.argv[2]))
+started=time.monotonic()
 r=subprocess.run(['/app/ssync',*args],env=env,capture_output=True,text=True,timeout=int(sys.argv[3]))
-print(json.dumps({'code':r.returncode,'out':r.stdout,'err':r.stderr}))
+m=resource.getrusage(resource.RUSAGE_CHILDREN)
+print(json.dumps({'code':r.returncode,'out':r.stdout,'err':r.stderr,'metrics':{'elapsed_seconds':time.monotonic()-started,'peak_rss_kib':m.ru_maxrss,'in_blocks':m.ru_inblock,'out_blocks':m.ru_oublock}}))
 ''', json.dumps(args), json.dumps(vars), timeout, timeout=timeout+5)
     return json.loads(out)
 
@@ -50,7 +53,7 @@ print(json.dumps({'code':r.returncode,'out':r.stdout,'err':r.stderr}))
 def start(peer, args, password=PASSWORD, env=None):
     global SEQ
     SEQ += 1
-    job = f'/work/app-tests/job-{SEQ}'
+    job = f'/work/app-tests/job-{time.monotonic_ns()}-{SEQ}'
     execute(peer, '''import json,os,pathlib,subprocess,sys
 job=sys.argv[1];args=json.loads(sys.argv[2]);env=os.environ.copy();env.update(json.loads(sys.argv[3]))
 worker="""import subprocess,json,sys,pathlib,os
@@ -63,6 +66,7 @@ pathlib.Path(j+'.result').write_text(str(code))
 """
 subprocess.Popen(['python3','-c',worker,job,json.dumps(args),json.dumps(env)],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
 ''', job, json.dumps(args), json.dumps({'SSYNC_PASSWORD': password, **(env or {})}))
+    STARTED.append((peer,job))
     return peer, job
 
 
@@ -120,7 +124,9 @@ def record(name, **data):
     row = {'test': name, 'passed': True, **data}
     RESULTS.append(row)
     print(json.dumps(row), flush=True)
-    report = ROOT/'target/podman-application/results.json'
+    import __main__
+    label=Path(__main__.__file__).stem
+    report = ROOT/f'target/podman-{label}/results.json'
     report.parent.mkdir(parents=True, exist_ok=True)
     report.write_text(json.dumps(RESULTS, indent=2)+'\n')
 
@@ -214,4 +220,13 @@ os.utime(p,ns=(st.st_atime_ns,st.st_mtime_ns))
     print('Application core tests passed; further security/lifecycle tests are separate gates.')
 
 
-if __name__=='__main__': main()
+def cleanup():
+    for job in STARTED:
+        try:
+            if logs(job)['code']=='':stop(job)
+        except Exception:pass
+
+if __name__=='__main__':
+    try:main()
+    finally:cleanup()
+

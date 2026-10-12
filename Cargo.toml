@@ -2,7 +2,7 @@
 name = "ssync"
 version = "4.0.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Password-authenticated native fixed-block file synchronization"
 license = "MIT"
 repository = "https://github.com/brontoguana/ssync"

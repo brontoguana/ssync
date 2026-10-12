@@ -9,7 +9,7 @@ use std::{
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::PathBuf,
 };
-const OWNER: &str = ".ssync-install.json";
+const OWNER: &[u8] = b"user.ssync.install\0";
 const BINARY: &str = "ssync";
 const LIMIT: usize = 64 * 1024 * 1024;
 #[derive(Serialize, Deserialize)]
@@ -63,19 +63,30 @@ fn read_file(root: &Root, name: &str, limit: usize) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 fn ownership(root: &Root) -> Result<Option<Ownership>> {
-    if root.metadata(OWNER)?.is_none() {
-        ensure!(
-            root.metadata(BINARY)?.is_none(),
-            "existing ssync has no ownership record; refusing to replace unrelated executable"
-        );
+    use std::os::fd::AsRawFd;
+    if root.metadata(BINARY)?.is_none() {
         return Ok(None);
     }
-    let m = root.metadata(OWNER)?.context("ownership record missing")?;
+    let file = root.read(BINARY)?;
+    let m = file.metadata()?;
     ensure!(
-        m.uid() == unsafe { libc::geteuid() } && m.mode() & 0o777 == 0o600,
-        "unsafe ownership record"
+        m.uid() == unsafe { libc::geteuid() } && m.mode() & 0o022 == 0,
+        "unsafe installation owner/mode"
     );
-    let record: Ownership = serde_json::from_slice(&read_file(root, OWNER, 4096)?)?;
+    let mut bytes = vec![0u8; 4096];
+    let size = unsafe {
+        libc::fgetxattr(
+            file.as_raw_fd(),
+            OWNER.as_ptr().cast(),
+            bytes.as_mut_ptr().cast(),
+            bytes.len(),
+        )
+    };
+    ensure!(
+        size > 0,
+        "existing ssync has no valid ownership record; refusing to replace unrelated executable"
+    );
+    let record: Ownership = serde_json::from_slice(&bytes[..size as usize])?;
     ensure!(
         record.application == "SSync native"
             && hash(&read_file(root, BINARY, LIMIT)?) == record.sha256,
@@ -83,6 +94,7 @@ fn ownership(root: &Root) -> Result<Option<Ownership>> {
     );
     Ok(Some(record))
 }
+
 fn elf(bytes: &[u8]) -> Result<()> {
     ensure!(
         bytes.len() > 64 && &bytes[..4] == b"\x7fELF" && bytes[4] == 2 && bytes[5] == 1,
@@ -103,14 +115,13 @@ fn elf(bytes: &[u8]) -> Result<()> {
 fn install_bytes(root: &Root, bytes: &[u8], version: &str) -> Result<()> {
     elf(bytes)?;
     let prior = ownership(root)?;
-    if let Some(record) = prior.as_ref() {
-        if record.sha256 == hash(bytes) {
-            println!("SSync {version} is already installed in {:?}", root.path);
-            return Ok(());
-        }
+    if let Some(record) = prior.as_ref()
+        && record.sha256 == hash(bytes)
+    {
+        println!("SSync {version} is already installed in {:?}", root.path);
+        return Ok(());
     }
     let binary_expected = root.metadata(BINARY)?.as_ref().map(fs::identity);
-    let record_expected = root.metadata(OWNER)?.as_ref().map(fs::identity);
     let id = blake3::hash(crate::auth::password()?.as_bytes())
         .to_hex()
         .to_string();
@@ -124,15 +135,23 @@ fn install_bytes(root: &Root, bytes: &[u8], version: &str) -> Result<()> {
         version: version.into(),
         sha256: hash(bytes),
     })?;
-    let rid = blake3::hash(crate::auth::password()?.as_bytes())
-        .to_hex()
-        .to_string();
-    let (rstate, mut rfile) = root.stage(&rid)?;
-    rfile.write_all(&record)?;
-    rfile.sync_all()?;
-    // All checks/downloads/staging finish before replacing the installed binary.
+    use std::os::fd::AsRawFd;
+    ensure!(
+        unsafe {
+            libc::fsetxattr(
+                file.as_raw_fd(),
+                OWNER.as_ptr().cast(),
+                record.as_ptr().cast(),
+                record.len(),
+                0,
+            )
+        } == 0,
+        "cannot store SSync ownership metadata: {}",
+        std::io::Error::last_os_error()
+    );
+    file.sync_all()?;
+    // Ownership travels on the same staged inode: one atomic rename commits both.
     root.commit(&state, &id, BINARY, &binary_expected)?;
-    root.commit(&rstate, &rid, OWNER, &record_expected)?;
     println!("Installed SSync {version} in {:?}", root.path);
     Ok(())
 }
@@ -186,7 +205,8 @@ pub fn run(action: &str) -> Result<()> {
                 return Ok(());
             };
             let _ = record;
-            for name in [BINARY, OWNER] {
+            {
+                let name = BINARY;
                 let m = root.metadata(name)?.context("installation changed")?;
                 root.remove(name, &fs::identity(&m))?;
             }

@@ -12,7 +12,7 @@ use std::{
 };
 
 pub const STATE: &str = ".ssync-state";
-pub const MAX_ENTRIES: usize = 100_000;
+pub const MAX_ENTRIES: usize = 10_000;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Identity {
     dev: u64,
@@ -238,7 +238,7 @@ impl Root {
         );
         let count = std::fs::read_dir(format!("/proc/self/fd/{}", dir.as_raw_fd()))?.count();
         ensure!(
-            count < 128,
+            count <= 128,
             "resume state limit reached; inspect private .ssync-state locally"
         );
         Ok(dir)
@@ -249,6 +249,14 @@ impl Root {
             "invalid stage id"
         );
         let state = self.state()?;
+        let entries = std::fs::read_dir(format!("/proc/self/fd/{}", state.as_raw_fd()))?;
+        let mut count = 0;
+        for entry in entries {
+            let _ = entry?;
+            count += 1;
+        }
+        let existed = beneath(&state, id, libc::O_PATH, 0).is_ok();
+        ensure!(existed || count < 128, "resume state file limit");
         let file = beneath(
             &state,
             id,
@@ -262,6 +270,30 @@ impl Root {
             "unsafe partial file"
         );
         Ok((state, file))
+    }
+    pub fn partial_capacity(&self, state: &File, id: &str, size: u64) -> Result<()> {
+        let mut total = size;
+        for entry in std::fs::read_dir(format!("/proc/self/fd/{}", state.as_raw_fd()))? {
+            let entry = entry?;
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| anyhow::anyhow!("invalid state entry"))?;
+            if name == id {
+                continue;
+            }
+            let f = beneath(state, &name, libc::O_PATH, 0)?;
+            let m = f.metadata()?;
+            regular(&m)?;
+            total = total
+                .checked_add(m.len())
+                .context("partial quota overflow")?;
+        }
+        ensure!(
+            total <= 16 * 1024 * 1024 * 1024,
+            "private partial quota exceeded (16 GiB)"
+        );
+        Ok(())
     }
     pub fn commit(
         &self,

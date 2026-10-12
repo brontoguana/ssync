@@ -16,7 +16,7 @@ use std::{
     },
 };
 pub const BLOCK: usize = 200_000;
-const MAX_FILE: u64 = 64 * 1024 * 1024 * 1024;
+const MAX_FILE: u64 = 16 * 1024 * 1024 * 1024;
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type", deny_unknown_fields)]
@@ -52,9 +52,6 @@ pub enum Message {
     },
     Want {
         yes: bool,
-    },
-    Data {
-        bytes: Vec<u8>,
     },
     EndFile {
         hash: String,
@@ -284,7 +281,7 @@ fn send_entry(
         );
     } else {
         fs::regular(&meta)?;
-        ensure!(meta.len() <= MAX_FILE, "file exceeds 64 GiB limit");
+        ensure!(meta.len() <= MAX_FILE, "file exceeds 16 GiB limit");
         let mut file = root.read(source)?;
         ensure!(
             fs::identity(&file.metadata()?) == before,
@@ -427,6 +424,7 @@ fn receive(t: &Transfer, c: &mut Channel, connector: bool, stop: &AtomicBool) ->
     root.lock()?;
     let mut stats = Stats::default();
     let mut seen = BTreeSet::new();
+    let mut path_bytes = 0usize;
     loop {
         cancelled(stop)?;
         let msg = c.recv()?;
@@ -434,6 +432,8 @@ fn receive(t: &Transfer, c: &mut Channel, connector: bool, stop: &AtomicBool) ->
             Message::Directory { path } => {
                 authorize(&path, &roots, t.options.merge, &skip)?;
                 ensure!(seen.insert(path.clone()), "duplicate entry");
+                path_bytes += path.len();
+                ensure!(path_bytes <= 8 * 1024 * 1024, "manifest path-byte limit");
                 if t.options.dryrun {
                     println!("Would create directory {:?}", path);
                     if let Some(m) = root.metadata(&path)? {
@@ -447,6 +447,8 @@ fn receive(t: &Transfer, c: &mut Channel, connector: bool, stop: &AtomicBool) ->
             Message::File { path, size, hash } => {
                 authorize(&path, &roots, t.options.merge, &skip)?;
                 ensure!(seen.insert(path.clone()), "duplicate entry");
+                path_bytes += path.len();
+                ensure!(path_bytes <= 8 * 1024 * 1024, "manifest path-byte limit");
                 check_hash(&hash)?;
                 ensure!(size <= MAX_FILE, "file size limit");
                 receive_file(&root, &path, size, &hash, t, c, &mut stats, stop)?;
@@ -517,16 +519,17 @@ fn receive_file(
     } else {
         None
     };
-    if let Some(f) = old.as_mut() {
-        if f.metadata()?.len() == size && fs::digest(f)?.to_hex().as_str() == hash {
-            ensure!(
-                root.metadata(path)?.as_ref().map(fs::identity) == expected,
-                "destination changed during comparison"
-            );
-            c.send(&Message::Need { skip: true })?;
-            stats.skipped += 1;
-            return Ok(());
-        }
+    if let Some(f) = old.as_mut()
+        && f.metadata()?.len() == size
+        && fs::digest(f)?.to_hex().as_str() == hash
+    {
+        ensure!(
+            root.metadata(path)?.as_ref().map(fs::identity) == expected,
+            "destination changed during comparison"
+        );
+        c.send(&Message::Need { skip: true })?;
+        stats.skipped += 1;
+        return Ok(());
     }
     println!(
         "{} {:?} ({} bytes)",
@@ -541,10 +544,10 @@ fn receive_file(
     if !t.options.dryrun {
         root.mkdirs(fs::split(path).0)?;
     }
-    let resume_key = blake3::derive_key(
+    let resume_key = zeroize::Zeroizing::new(blake3::derive_key(
         "SSync 4 credential-bound private resume",
         t.password.as_bytes(),
-    );
+    ));
     let id = blake3::keyed_hash(&resume_key, format!("{path}\0{size}\0{hash}").as_bytes())
         .to_hex()
         .to_string();
@@ -553,6 +556,9 @@ fn receive_file(
     } else {
         Some(root.stage(&id)?)
     };
+    if let Some((state, _)) = &stage {
+        root.partial_capacity(state, &id, size)?;
+    }
     c.send(&Message::Need { skip: false })?;
     let mut offset = 0u64;
     let mut final_hash = blake3::Hasher::new();
@@ -576,10 +582,8 @@ fn receive_file(
         if let Some((_, f)) = stage.as_mut() {
             reused = read_matching(f, offset, &mut data, &block_hash)?;
         }
-        if !reused {
-            if let Some(f) = old.as_mut() {
-                reused = read_matching(f, offset, &mut data, &block_hash)?;
-            }
+        if !reused && let Some(f) = old.as_mut() {
+            reused = read_matching(f, offset, &mut data, &block_hash)?;
         }
         let want = !reused && !t.options.dryrun;
         c.send(&Message::Want { yes: want })?;

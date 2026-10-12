@@ -34,3 +34,7 @@
 - Add Rust package and begin authenticated-channel validation before transfer implementation.
 - Implement CLI parsing/guidance, OPAQUE/Argon2id and Noise confirmation, Linux directory-relative file safety, fixed-block deltas/resume and atomic per-file commit.
 - Add persistent listeners/connectors, scoped mirroring/filter/dry-run behavior, diagnostics, declarative concurrent configuration and native install/update/uninstall.
+- Add actual two-peer application/security/lifecycle/management runners and a test-only authenticated adversarial peer.
+- Measure zero-content identical repeats, 200,000-byte single-block deltas, verified interruption resume and scoped deletion.
+- Harden wall-clock handshake deadlines and process-wide expensive-authentication concurrency, manifest/state quotas, IPv6 listening and continuous reconnect.
+- Make ownership metadata part of the atomically installed executable; fix stale test-result reuse and update vulnerable transitive time dependency.

@@ -163,9 +163,12 @@ pub fn transfer_command(t: Transfer, control: Arc<Control>) -> Result<()> {
                 }
             }
             if let Some(s) = socket {
-                session(&t, s, None, &control)?;
+                let result = session(&t, s, None, &control);
                 if !t.continuous() {
-                    return Ok(());
+                    return result;
+                }
+                if let Err(e) = result {
+                    eprintln!("Continuous session failed; retrying: {e:#}");
                 }
             } else if !t.continuous() {
                 bail!("connection failed");
@@ -179,7 +182,8 @@ pub fn transfer_command(t: Transfer, control: Arc<Control>) -> Result<()> {
         }
     }
     let credential = Arc::new(Credential::new(&t.password)?);
-    let listener = TcpListener::bind(("0.0.0.0", t.port))?;
+    let listener =
+        TcpListener::bind(("::", t.port)).or_else(|_| TcpListener::bind(("0.0.0.0", t.port)))?;
     listener.set_nonblocking(true)?;
     println!(
         "{} now accepting {}connections on port {}",
@@ -197,7 +201,10 @@ pub fn transfer_command(t: Transfer, control: Arc<Control>) -> Result<()> {
             Ok((socket, addr)) => {
                 if active.load(Ordering::Relaxed) >= 8
                     || authenticating.load(Ordering::Relaxed) >= 4
-                    || !admission.lock().unwrap().allow(addr.ip(), Instant::now())
+                    || !admission
+                        .lock()
+                        .unwrap()
+                        .allow(addr.ip().to_canonical(), Instant::now())
                 {
                     continue;
                 }
@@ -215,7 +222,13 @@ pub fn transfer_command(t: Transfer, control: Arc<Control>) -> Result<()> {
                 let authenticating = authenticating.clone();
                 workers.push(std::thread::spawn(move || {
                     let result = (|| -> Result<()> {
-                        let _guard = control.track(&socket)?;
+                        let _guard = match control.track(&socket) {
+                            Ok(g) => g,
+                            Err(e) => {
+                                authenticating.fetch_sub(1, Ordering::Relaxed);
+                                return Err(e);
+                            }
+                        };
                         let authenticated = Channel::authenticate(
                             socket,
                             &t.password,
@@ -225,11 +238,14 @@ pub fn transfer_command(t: Transfer, control: Arc<Control>) -> Result<()> {
                         authenticating.fetch_sub(1, Ordering::Relaxed);
                         let mut channel = match authenticated {
                             Ok(c) => {
-                                admission.lock().unwrap().success(addr.ip());
+                                admission.lock().unwrap().success(addr.ip().to_canonical());
                                 c
                             }
                             Err(_) => {
-                                admission.lock().unwrap().failure(addr.ip(), Instant::now());
+                                admission
+                                    .lock()
+                                    .unwrap()
+                                    .failure(addr.ip().to_canonical(), Instant::now());
                                 bail!("authentication/protocol confirmation failed");
                             }
                         };
