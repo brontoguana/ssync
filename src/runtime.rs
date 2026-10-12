@@ -125,8 +125,12 @@ impl Admission {
         }
     }
     pub fn success(&mut self, ip: IpAddr) {
+        // Correct authentication returns its admission credit; reusable valid credentials
+        // must not exhaust the failed-guess budget during continuous operation.
+        self.global.tokens = (self.global.tokens + 1.).min(20.);
         if let Some(a) = self.ips.get_mut(&ip) {
             a.failures = 0;
+            a.tokens = (a.tokens + 1.).min(5.);
         } /* global failures intentionally not erased by an attacker with a valid password */
     }
 }
@@ -139,7 +143,7 @@ fn session(
     let _guard = control.track(&socket)?;
     let connector = credential.is_none();
     let mut channel = Channel::authenticate(socket, &t.password, credential, t.sending())
-        .map_err(|_| anyhow::anyhow!("authentication/protocol confirmation failed"))?;
+        .map_err(|_| anyhow::anyhow!("authentication/protocol confirmation failed; SSync 4 and matching passwords required"))?;
     transfer::run(t, &mut channel, connector, &control.stop)?;
     Ok(())
 }
@@ -182,8 +186,32 @@ pub fn transfer_command(t: Transfer, control: Arc<Control>) -> Result<()> {
         }
     }
     let credential = Arc::new(Credential::new(&t.password)?);
-    let listener =
-        TcpListener::bind(("::", t.port)).or_else(|_| TcpListener::bind(("0.0.0.0", t.port)))?;
+    // Explicit dual-stack configuration is independent of the host's v6only default.
+    let ipv6 = (|| -> std::io::Result<TcpListener> {
+        let socket = socket2::Socket::new(
+            socket2::Domain::IPV6,
+            socket2::Type::STREAM,
+            Some(socket2::Protocol::TCP),
+        )?;
+        socket.set_only_v6(false)?;
+        socket.set_reuse_address(true)?;
+        let address = std::net::SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, t.port));
+        socket.bind(&address.into())?;
+        socket.listen(128)?;
+        Ok(socket.into())
+    })();
+    let listener = match ipv6 {
+        Ok(s) => s,
+        Err(e)
+            if matches!(
+                e.raw_os_error(),
+                Some(libc::EAFNOSUPPORT | libc::EPROTONOSUPPORT | libc::EADDRNOTAVAIL)
+            ) =>
+        {
+            TcpListener::bind(("0.0.0.0", t.port))?
+        }
+        Err(e) => return Err(e.into()),
+    };
     listener.set_nonblocking(true)?;
     println!(
         "{} now accepting {}connections on port {}",
@@ -246,7 +274,7 @@ pub fn transfer_command(t: Transfer, control: Arc<Control>) -> Result<()> {
                                     .lock()
                                     .unwrap()
                                     .failure(addr.ip().to_canonical(), Instant::now());
-                                bail!("authentication/protocol confirmation failed");
+                                bail!("authentication/protocol confirmation failed; SSync 4 and matching passwords required");
                             }
                         };
                         transfer::run(&t, &mut channel, false, &control.stop)?;
@@ -323,9 +351,14 @@ pub fn config(path: &Path, control: Arc<Control>) -> Result<()> {
         m.mode() & 0o022 == 0 && m.len() <= 1_048_576,
         "unsafe or oversized .ssync file"
     );
+    ensure!(
+        m.uid() == unsafe { libc::geteuid() } || m.uid() == 0,
+        ".ssync configuration must be owned by the current user or root"
+    );
     let mut data = String::new();
     file.read_to_string(&mut data)?;
     let mut commands = Vec::new();
+    let password = cli::password_input(std::env::var("SSYNC_PASSWORD").ok().as_deref())?;
     for line in data.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -333,8 +366,7 @@ pub fn config(path: &Path, control: Arc<Control>) -> Result<()> {
         }
         let args = shell_words::split(line)
             .map_err(|_| anyhow::anyhow!("invalid quoted .ssync command"))?;
-        let Command::Transfer(t) =
-            cli::parse(&args, std::env::var("SSYNC_PASSWORD").ok().as_deref())?
+        let Command::Transfer(t) = cli::parse(&args, password.as_deref().map(|s| s.as_str()))?
         else {
             bail!(".ssync permits only file transfer commands");
         };
@@ -342,6 +374,12 @@ pub fn config(path: &Path, control: Arc<Control>) -> Result<()> {
         ensure!(commands.len() <= 32, ".ssync command limit");
     }
     ensure!(!commands.is_empty(), "empty .ssync file");
+    if commands.len() > 1 {
+        ensure!(
+            commands.iter().all(|t| t.host.is_none() || t.options.force),
+            "concurrent .ssync connectors require force to avoid interleaved confirmations"
+        );
+    }
     let mut workers = Vec::new();
     for t in commands {
         let c = control.clone();
@@ -370,6 +408,21 @@ pub fn config(path: &Path, control: Arc<Control>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn authenticated_reuse_returns_admission_credit() {
+        let mut a = Admission::default();
+        let now = Instant::now();
+        let ip = "127.0.0.1".parse().unwrap();
+        for _ in 0..100 {
+            assert!(a.allow(ip, now));
+            a.success(ip);
+        }
+        for _ in 0..5 {
+            assert!(a.allow(ip, now));
+            a.failure(ip, now);
+        }
+        assert!(!a.allow(ip, now));
+    }
     #[test]
     fn bounded_throttling() {
         let mut a = Admission::default();

@@ -38,3 +38,8 @@
 - Measure zero-content identical repeats, 200,000-byte single-block deltas, verified interruption resume and scoped deletion.
 - Harden wall-clock handshake deadlines and process-wide expensive-authentication concurrency, manifest/state quotas, IPv6 listening and continuous reconnect.
 - Make ownership metadata part of the atomically installed executable; fix stale test-result reuse and update vulnerable transitive time dependency.
+- Add genuine receiver comparison/data overlap using bounded lookahead and positional reads; keep dry-run reuse counters truthful.
+- Preserve supported source file mtimes and reject unsupported/clamped timestamps, unsafe/casefold filesystems and untrusted config ownership.
+- Keep frequent valid credential reuse outside failed-guess budgets, configure dual-stack listening explicitly, and preserve numeric/diagnostic command compatibility.
+- Embed public Rust dependency notices with a local `licenses` command; retain private references outside public Git history.
+- Extend tests with SIGTERM/SIGKILL, deep/control-named files, destination links, rotation, quota boundaries and multi-GiB/high-offset transfers.

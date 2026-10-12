@@ -61,8 +61,8 @@ try:
                         dst.sendall(value);a.mode='forward'
                     elif a.mode=='truncate' and src is c:
                         dst.sendall(value[:max(1,len(value)//2)]);raise EOFError()
-                    elif a.mode in ('interrupt','slow') and src is c:
-                        time.sleep(.03)
+                    elif a.mode in ('interrupt','slow','long') and src is c:
+                        time.sleep(3 if a.mode=='long' else .03)
                         if a.mode=='interrupt' and total>1_000_000:raise EOFError()
                     dst.sendall(value)
 except (EOFError,OSError,ValueError,TimeoutError) as e:

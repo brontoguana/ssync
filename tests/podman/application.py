@@ -53,15 +53,18 @@ print(json.dumps({'code':r.returncode,'out':r.stdout,'err':r.stderr,'metrics':{'
 def start(peer, args, password=PASSWORD, env=None):
     global SEQ
     SEQ += 1
-    job = f'/work/app-tests/job-{time.monotonic_ns()}-{SEQ}'
+    job = f'/tmp/ssync-jobs/job-{time.monotonic_ns()}-{SEQ}'
     execute(peer, '''import json,os,pathlib,subprocess,sys
-job=sys.argv[1];args=json.loads(sys.argv[2]);env=os.environ.copy();env.update(json.loads(sys.argv[3]))
-worker="""import subprocess,json,sys,pathlib,os
+job=sys.argv[1];pathlib.Path('/tmp/ssync-jobs').mkdir(exist_ok=True,mode=0o700);args=json.loads(sys.argv[2]);env=os.environ.copy();env.update(json.loads(sys.argv[3]))
+worker="""import subprocess,json,sys,pathlib,os,resource,time
 j=sys.argv[1];args=json.loads(sys.argv[2]);env=json.loads(sys.argv[3])
+started=time.monotonic()
 with open(j+'.out','w') as out,open(j+'.err','w') as err:
  p=subprocess.Popen(['/app/ssync',*args],env=env,stdout=out,stderr=err)
  pathlib.Path(j+'.pid').write_text(str(p.pid))
  code=p.wait()
+metrics=resource.getrusage(resource.RUSAGE_CHILDREN)
+pathlib.Path(j+'.metrics').write_text(json.dumps({'elapsed_seconds':time.monotonic()-started,'peak_rss_kib':metrics.ru_maxrss,'in_blocks':metrics.ru_inblock,'out_blocks':metrics.ru_oublock}))
 pathlib.Path(j+'.result').write_text(str(code))
 """
 subprocess.Popen(['python3','-c',worker,job,json.dumps(args),json.dumps(env)],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
@@ -76,7 +79,7 @@ def logs(job):
 j=sys.argv[1]
 def read(s):
  p=pathlib.Path(j+s);return p.read_text() if p.exists() else ''
-print(json.dumps({'out':read('.out'),'err':read('.err'),'code':read('.result')}))
+print(json.dumps({'out':read('.out'),'err':read('.err'),'code':read('.result'),'metrics':json.loads(read('.metrics') or '{}')}))
 ''', path))
 
 
@@ -149,7 +152,7 @@ for f in sorted(p.rglob('*')):
  if '.ssync-state' in f.relative_to(p).parts: continue
  key=str(f.relative_to(p))
  if f.is_symlink(): out[key]=['link',os.readlink(f)]
- elif f.is_file(): out[key]=['file',f.stat().st_size,hashlib.sha256(f.read_bytes()).hexdigest(),f.stat().st_mode&0o777]
+ elif f.is_file(): out[key]=['file',f.stat().st_size,hashlib.file_digest(f.open('rb'),'sha256').hexdigest(),f.stat().st_mode&0o777,f.stat().st_mtime_ns]
  elif f.is_dir(): out[key]=['dir']
 print(json.dumps(out))
 ''', path))
@@ -229,4 +232,3 @@ def cleanup():
 if __name__=='__main__':
     try:main()
     finally:cleanup()
-

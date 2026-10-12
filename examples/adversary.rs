@@ -19,6 +19,7 @@ fn run() -> Result<()> {
         )],
         skip: vec![],
         dryrun: false,
+        nodelete: false,
     })?;
     channel.send(&Message::Approved { yes: true })?;
     let path = args.get(2).map(String::as_str).unwrap_or("source/x");
@@ -38,6 +39,8 @@ fn run() -> Result<()> {
             path: path.into(),
             size: u64::MAX,
             hash: "a".repeat(64),
+            modified_secs: 1,
+            modified_nanos: 0,
         })?,
         "incomplete" => {
             channel.send(&Message::Directory {
@@ -53,6 +56,8 @@ fn run() -> Result<()> {
                 path: path.into(),
                 size: 200_000,
                 hash: hash.clone(),
+                modified_secs: 1,
+                modified_nanos: 0,
             })?;
             let need: Message = channel.recv()?;
             ensure!(
@@ -70,6 +75,7 @@ fn run() -> Result<()> {
                     println!("holding");
                     std::thread::sleep(std::time::Duration::from_secs(30));
                 } else {
+                    channel.send(&Message::WindowEnd {})?;
                     channel.send_bytes(&vec![43; 200_000])?;
                 }
             }

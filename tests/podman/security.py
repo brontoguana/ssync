@@ -81,6 +81,8 @@ r=subprocess.run(['/app/adversary',sys.argv[2],sys.argv[3],sys.argv[4]],capture_
 print(json.dumps({'code':r.returncode,'out':r.stdout,'err':r.stderr}))
 ''',PASSWORD,f'{IP}:{PORT}',mode,path))
         remote=app.wait(job);assert remote['code']!=0,(mode,path,remote)
+        expected={'path':'unsafe','unknown':'malformed or unknown','duplicate':'duplicate entry','size':'file size limit','incomplete':'incomplete manifest','block':'invalid block range','digest':'block content verification failed'}[mode]
+        assert result['code']==0 and 'Rejected' in result['out'] and expected in remote['err'],(mode,result,remote)
         # Directory creation before malformed final state is permitted; existing file bytes must survive.
         after=app.snapshot(B,dest)
         for key,value in before.items():assert after.get(key)==value,(mode,key)

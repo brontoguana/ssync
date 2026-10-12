@@ -30,6 +30,7 @@ pub enum Message {
         roots: Vec<(String, bool)>,
         skip: Vec<String>,
         dryrun: bool,
+        nodelete: bool,
     },
     Approved {
         yes: bool,
@@ -41,6 +42,8 @@ pub enum Message {
         path: String,
         size: u64,
         hash: String,
+        modified_secs: i64,
+        modified_nanos: u32,
     },
     Need {
         skip: bool,
@@ -52,11 +55,13 @@ pub enum Message {
     },
     Want {
         yes: bool,
+        reused: bool,
     },
+    WindowEnd {},
     EndFile {
         hash: String,
     },
-    Ack,
+    Ack {},
     Done {
         entries: usize,
     },
@@ -142,6 +147,7 @@ fn approve(t: &Transfer, channel: &mut Channel, connector: bool, description: &s
             std::io::stdout().flush()?;
             let mut line = String::new();
             std::io::stdin().read_line(&mut line)?;
+            println!();
             line.trim() == "y"
         };
         channel.send(&Message::Approved { yes })?;
@@ -206,6 +212,7 @@ fn send(t: &Transfer, c: &mut Channel, connector: bool, stop: &AtomicBool) -> Re
         roots: sources.iter().map(|s| (s.name.clone(), s.is_dir)).collect(),
         skip: t.options.skip.clone(),
         dryrun: t.options.dryrun,
+        nodelete: t.options.nodelete,
     })?;
     approve(t, c, connector, "send selected files")?;
     let mut stats = Stats::default();
@@ -218,6 +225,7 @@ fn send(t: &Transfer, c: &mut Channel, connector: bool, stop: &AtomicBool) -> Re
             &target,
             &skip,
             dryrun || t.options.dryrun,
+            t.options.verbose,
             c,
             &mut stats,
             &mut count,
@@ -234,6 +242,15 @@ fn send(t: &Transfer, c: &mut Channel, connector: bool, stop: &AtomicBool) -> Re
         "transfer byte accounting mismatch"
     );
     stats.deleted = remote.deleted;
+    if t.options.verify {
+        for s in &sources {
+            println!(
+                "Directory Verification Hash {:?}: {}",
+                s.name,
+                tree_hash(&s.root, &s.path)?
+            );
+        }
+    }
     Ok(stats)
 }
 #[allow(clippy::too_many_arguments)]
@@ -243,6 +260,7 @@ fn send_entry(
     target: &str,
     skip: &[String],
     dry: bool,
+    verbose: bool,
     c: &mut Channel,
     stats: &mut Stats,
     count: &mut usize,
@@ -273,7 +291,9 @@ fn send_entry(
             } else {
                 format!("{target}/{name}")
             };
-            send_entry(root, &source, &target, skip, dry, c, stats, count, stop)?;
+            send_entry(
+                root, &source, &target, skip, dry, verbose, c, stats, count, stop,
+            )?;
         }
         ensure!(
             root.metadata(source)?.as_ref().map(fs::identity) == Some(before),
@@ -292,6 +312,8 @@ fn send_entry(
             path: target.into(),
             size: meta.len(),
             hash: hash.clone(),
+            modified_secs: std::os::unix::fs::MetadataExt::mtime(&meta),
+            modified_nanos: std::os::unix::fs::MetadataExt::mtime_nsec(&meta) as u32,
         })?;
         let Message::Need { skip: whole_skip } = c.recv()? else {
             bail!("expected block request")
@@ -340,24 +362,61 @@ fn send_entry(
                         let _ = tx.send(Err(e));
                     }
                 });
-                for block in rx {
-                    cancelled(stop)?;
-                    let (offset, bytes, hash) = block?;
+                let mut blocks = rx.into_iter();
+                if let Some(first) = blocks.next() {
+                    let mut current = first?;
                     c.send(&Message::Block {
-                        offset,
-                        len: bytes.len(),
-                        hash,
+                        offset: current.0,
+                        len: current.1.len(),
+                        hash: current.2.clone(),
                     })?;
-                    let Message::Want { yes } = c.recv()? else {
-                        bail!("expected block comparison")
-                    };
-                    if yes {
-                        ensure!(!dry, "dry run requested payload");
-                        stats.content_bytes += bytes.len() as u64;
-                        c.send_bytes(&bytes)?;
-                        expect_ack(c)?;
-                    } else {
-                        stats.reused_bytes += bytes.len() as u64;
+                    loop {
+                        cancelled(stop)?;
+                        let Message::Want { yes, reused } = c.recv()? else {
+                            bail!("expected block comparison");
+                        };
+                        ensure!(
+                            !(yes && reused) && (yes || reused || dry),
+                            "invalid block comparison"
+                        );
+                        let next = blocks.next().transpose()?;
+                        if let Some((offset, bytes, hash)) = &next {
+                            c.send(&Message::Block {
+                                offset: *offset,
+                                len: bytes.len(),
+                                hash: hash.clone(),
+                            })?;
+                        } else {
+                            c.send(&Message::WindowEnd {})?;
+                        }
+                        if verbose {
+                            println!(
+                                "Block {:?}@{}+{}: {}",
+                                target,
+                                current.0,
+                                current.1.len(),
+                                if yes {
+                                    "send"
+                                } else if reused {
+                                    "reuse"
+                                } else {
+                                    "preview"
+                                }
+                            );
+                        }
+                        if yes {
+                            ensure!(!dry, "dry run requested payload");
+                            stats.content_bytes += current.1.len() as u64;
+                            c.send_bytes(&current.1)?;
+                            expect_ack(c)?;
+                        } else if reused {
+                            stats.reused_bytes += current.1.len() as u64;
+                        }
+                        if let Some(next) = next {
+                            current = next;
+                        } else {
+                            break;
+                        }
                     }
                 }
                 Ok(())
@@ -377,7 +436,10 @@ fn send_entry(
     Ok(())
 }
 fn expect_ack(c: &mut Channel) -> Result<()> {
-    ensure!(matches!(c.recv()?, Message::Ack), "expected acknowledgment");
+    ensure!(
+        matches!(c.recv()?, Message::Ack {}),
+        "expected acknowledgment"
+    );
     Ok(())
 }
 
@@ -391,6 +453,7 @@ fn receive(t: &Transfer, c: &mut Channel, connector: bool, stop: &AtomicBool) ->
         roots,
         skip: remote_skip,
         dryrun: remote_dry,
+        nodelete: remote_nodelete,
     } = c.recv()?
     else {
         bail!("expected selected roots")
@@ -419,6 +482,7 @@ fn receive(t: &Transfer, c: &mut Channel, connector: bool, stop: &AtomicBool) ->
     approve(t, c, connector, &format!("receive {:?}", roots))?;
     let mut effective = t.clone();
     effective.options.dryrun |= remote_dry;
+    effective.options.nodelete |= remote_nodelete;
     let t = &effective;
     let root = Root::new(&t.paths[0])?;
     root.lock()?;
@@ -442,16 +506,32 @@ fn receive(t: &Transfer, c: &mut Channel, connector: bool, stop: &AtomicBool) ->
                 } else {
                     root.mkdirs(&path)?;
                 }
-                c.send(&Message::Ack)?;
+                c.send(&Message::Ack {})?;
             }
-            Message::File { path, size, hash } => {
+            Message::File {
+                path,
+                size,
+                hash,
+                modified_secs,
+                modified_nanos,
+            } => {
                 authorize(&path, &roots, t.options.merge, &skip)?;
                 ensure!(seen.insert(path.clone()), "duplicate entry");
                 path_bytes += path.len();
                 ensure!(path_bytes <= 8 * 1024 * 1024, "manifest path-byte limit");
                 check_hash(&hash)?;
                 ensure!(size <= MAX_FILE, "file size limit");
-                receive_file(&root, &path, size, &hash, t, c, &mut stats, stop)?;
+                receive_file(
+                    &root,
+                    &path,
+                    size,
+                    &hash,
+                    (modified_secs, modified_nanos),
+                    t,
+                    c,
+                    &mut stats,
+                    stop,
+                )?;
             }
             Message::Done { entries } => {
                 ensure!(entries == seen.len(), "incomplete manifest");
@@ -504,11 +584,16 @@ fn receive_file(
     path: &str,
     size: u64,
     hash: &str,
+    modified: (i64, u32),
     t: &Transfer,
     c: &mut Channel,
     stats: &mut Stats,
     stop: &AtomicBool,
 ) -> Result<()> {
+    ensure!(
+        (-62_135_596_800..=253_402_300_799).contains(&modified.0) && modified.1 < 1_000_000_000,
+        "unsupported modification timestamp"
+    );
     let meta = root.metadata(path)?;
     if let Some(m) = &meta {
         fs::regular(m)?;
@@ -560,53 +645,106 @@ fn receive_file(
         root.partial_capacity(state, &id, size)?;
     }
     c.send(&Message::Need { skip: false })?;
-    let mut offset = 0u64;
     let mut final_hash = blake3::Hasher::new();
-    while offset < size {
-        cancelled(stop)?;
-        let Message::Block {
-            offset: remote,
-            len,
-            hash: block_hash,
-        } = c.recv()?
-        else {
-            bail!("expected block metadata")
-        };
-        check_hash(&block_hash)?;
-        ensure!(
-            remote == offset && len == (size - offset).min(BLOCK as u64) as usize,
-            "invalid block range"
-        );
-        let mut data = vec![0; len];
-        let mut reused = false;
-        if let Some((_, f)) = stage.as_mut() {
-            reused = read_matching(f, offset, &mut data, &block_hash)?;
-        }
-        if !reused && let Some(f) = old.as_mut() {
-            reused = read_matching(f, offset, &mut data, &block_hash)?;
-        }
-        let want = !reused && !t.options.dryrun;
-        c.send(&Message::Want { yes: want })?;
-        if want {
-            let bytes = c.recv_bytes()?;
-            ensure!(
-                bytes.len() == len && blake3::hash(&bytes).to_hex().as_str() == block_hash,
-                "block content verification failed"
-            );
-            data = bytes;
-            stats.content_bytes += len as u64;
-        } else if reused {
-            stats.reused_bytes += len as u64;
-        }
-        if let Some((_, f)) = stage.as_mut() {
-            f.seek(SeekFrom::Start(offset))?;
-            f.write_all(&data)?;
-            final_hash.update(&data);
-        }
-        if want {
-            c.send(&Message::Ack)?;
-        }
-        offset += len as u64;
+    if size > 0 {
+        let partial = stage.as_ref().map(|(_, f)| f.try_clone()).transpose()?;
+        let previous = old.as_ref().map(|f| f.try_clone()).transpose()?;
+        std::thread::scope(|scope| -> Result<()> {
+            type Request = (u64, usize, String);
+            let (requests, receive) = mpsc::sync_channel::<Request>(2);
+            let (results, compared) = mpsc::sync_channel::<Result<(Vec<u8>, bool)>>(2);
+            scope.spawn(move || {
+                for (offset, len, hash) in receive {
+                    let result = (|| -> Result<(Vec<u8>, bool)> {
+                        let mut data = vec![0; len];
+                        let mut reused = false;
+                        if let Some(f) = &partial {
+                            reused = read_matching(f, offset, &mut data, &hash)?;
+                        }
+                        if !reused && let Some(f) = &previous {
+                            reused = read_matching(f, offset, &mut data, &hash)?;
+                        }
+                        Ok((data, reused))
+                    })();
+                    if results.send(result).is_err() {
+                        break;
+                    }
+                }
+            });
+            let mut offset = 0u64;
+            let first = block_request(c.recv()?, 0, size)?;
+            requests
+                .send(first.clone())
+                .map_err(|_| anyhow::anyhow!("comparison worker stopped"))?;
+            let mut current = first;
+            loop {
+                cancelled(stop)?;
+                let (mut data, reused) = compared
+                    .recv()
+                    .map_err(|_| anyhow::anyhow!("comparison worker stopped"))??;
+                let want = !reused && !t.options.dryrun;
+                c.send(&Message::Want { yes: want, reused })?;
+                let next_offset = offset + current.1 as u64;
+                let next_message = c.recv()?;
+                let next = if next_offset < size {
+                    let next = block_request(next_message, next_offset, size)?;
+                    requests
+                        .send(next.clone())
+                        .map_err(|_| anyhow::anyhow!("comparison worker stopped"))?;
+                    Some(next)
+                } else {
+                    ensure!(
+                        matches!(next_message, Message::WindowEnd {}),
+                        "invalid comparison window end"
+                    );
+                    None
+                };
+                // Next range comparison runs concurrently with current payload receipt/write.
+                if t.options.verbose {
+                    println!(
+                        "Block {:?}@{}+{}: {}",
+                        path,
+                        offset,
+                        current.1,
+                        if want {
+                            "receive"
+                        } else if reused {
+                            "reuse"
+                        } else {
+                            "preview"
+                        }
+                    );
+                }
+                if want {
+                    let bytes = c.recv_bytes()?;
+                    ensure!(
+                        bytes.len() == current.1
+                            && blake3::hash(&bytes).to_hex().as_str() == current.2,
+                        "block content verification failed"
+                    );
+                    data = bytes;
+                    stats.content_bytes += current.1 as u64;
+                } else if reused {
+                    stats.reused_bytes += current.1 as u64;
+                }
+                if let Some((_, file)) = stage.as_mut() {
+                    file.seek(SeekFrom::Start(offset))?;
+                    file.write_all(&data)?;
+                    final_hash.update(&data);
+                }
+                if want {
+                    c.send(&Message::Ack {})?;
+                }
+                if let Some(next) = next {
+                    current = next;
+                    offset = next_offset;
+                } else {
+                    break;
+                }
+            }
+            drop(requests);
+            Ok(())
+        })?;
     }
     let Message::EndFile { hash: source_hash } = c.recv()? else {
         bail!("expected complete-file verification")
@@ -622,6 +760,27 @@ fn receive_file(
             fs::digest(f)?.to_hex().as_str() == hash,
             "staged file changed"
         );
+        use std::os::fd::AsRawFd;
+        let times = [
+            libc::timespec {
+                tv_sec: 0,
+                tv_nsec: libc::UTIME_OMIT,
+            },
+            libc::timespec {
+                tv_sec: modified.0,
+                tv_nsec: modified.1 as i64,
+            },
+        ];
+        ensure!(
+            unsafe { libc::futimens(f.as_raw_fd(), times.as_ptr()) } == 0,
+            "cannot preserve modification timestamp"
+        );
+        use std::os::unix::fs::MetadataExt;
+        let timestamp = f.metadata()?;
+        ensure!(
+            timestamp.mtime() == modified.0 && timestamp.mtime_nsec() == modified.1 as i64,
+            "filesystem cannot preserve modification timestamp"
+        );
         f.sync_all()?;
         // Verify receiver base has not changed even if copied ranges were identical.
         ensure!(
@@ -631,17 +790,41 @@ fn receive_file(
         root.commit(state, &id, path, &expected)?;
     }
     stats.files += 1;
-    c.send(&Message::Ack)?;
+    c.send(&Message::Ack {})?;
     Ok(())
 }
-fn read_matching(f: &mut File, offset: u64, data: &mut [u8], hash: &str) -> Result<bool> {
-    if f.metadata()?.len() < offset + data.len() as u64 {
+fn block_request(message: Message, offset: u64, size: u64) -> Result<(u64, usize, String)> {
+    let Message::Block {
+        offset: remote,
+        len,
+        hash,
+    } = message
+    else {
+        bail!("expected block metadata");
+    };
+    check_hash(&hash)?;
+    ensure!(
+        remote == offset && offset < size && len == (size - offset).min(BLOCK as u64) as usize,
+        "invalid block range"
+    );
+    Ok((offset, len, hash))
+}
+fn read_matching(file: &File, offset: u64, data: &mut [u8], hash: &str) -> Result<bool> {
+    use std::os::unix::fs::FileExt;
+    if file.metadata()?.len() < offset + data.len() as u64 {
         return Ok(false);
     }
-    f.seek(SeekFrom::Start(offset))?;
-    f.read_exact(data)?;
+    let mut n = 0;
+    while n < data.len() {
+        let got = file.read_at(&mut data[n..], offset + n as u64)?;
+        if got == 0 {
+            return Ok(false);
+        }
+        n += got;
+    }
     Ok(blake3::hash(data).to_hex().as_str() == hash)
 }
+
 fn delete_extras(
     root: &Root,
     path: &str,

@@ -48,6 +48,7 @@ print(sum(f.stat().st_size for f in p.glob('*')) if p.exists() else 0)
 def main():
     lab.status()
     source=f'{BASE}/lifecycle-source';app.fixture(A,source,8_000_000)
+    app.execute(A,'import pathlib,sys;pathlib.Path(sys.argv[1],"new").unlink(missing_ok=True)',source)
     dest=f'{BASE}/lifecycle-dest';sec.mkdir(B,dest)
     for diag in ['hash','deep','scan']:
         path=source if diag=='hash' else source+'/big.bin';r=app.command(A,[diag,path]);assert r['code']==0,r
@@ -105,6 +106,12 @@ p=pathlib.Path(sys.argv[1]);p.write_text(sys.argv[2]);p.chmod(0o600)
     job=sec.server(conflict,quals=['merge']);sec.proxy('slow');client=app.start(A,['force','put',f'{sec.IP}:40402',source]);wait_partial(conflict)
     app.execute(B,'import pathlib,sys;pathlib.Path(sys.argv[1],"big.bin").write_bytes(b"USER EDIT")',conflict)
     r=app.wait(client);assert r['code']!=0,r;assert app.wait(job)['code']!=0;assert app.execute(B,'import pathlib,sys;print(pathlib.Path(sys.argv[1],"big.bin").read_bytes().decode())',conflict)=='USER EDIT';app.record('destination mutation rejected and user edit preserved')
+    term=f'{BASE}/term';sec.mkdir(B,term)
+    app.execute(B,'import pathlib,sys;pathlib.Path(sys.argv[1],"big.bin").write_bytes(b"TERM ORIGINAL")',term)
+    job=sec.server(term,quals=['merge']);sec.proxy('slow');client=app.start(A,['force','put',f'{sec.IP}:40402',source]);wait_partial(term)
+    r=app.stop(client,sig=15);assert r['code']==1 and app.wait(job)['code']!=0
+    assert app.execute(B,'import pathlib,sys;print(pathlib.Path(sys.argv[1],"big.bin").read_bytes().decode())',term)=='TERM ORIGINAL'
+    app.record('SIGTERM graceful cancellation preserves original')
     # Symlink-directory racing cannot write to pre-existing outside-root canaries.
     race_source=f'{BASE}/race-source';sec.mkdir(A,race_source)
     app.execute(A,'''import pathlib,sys

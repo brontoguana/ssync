@@ -159,8 +159,8 @@ impl Channel {
         sending: bool,
     ) -> Result<Self> {
         validate_password(password)?;
-        let _permit = AuthPermit::acquire()?;
         let end = Instant::now() + AUTH_TIMEOUT;
+        let _permit = AuthPermit::acquire()?;
         // A wall-clock watchdog prevents slow trickle reads extending read_exact indefinitely.
         let deadline_socket = socket.try_clone()?;
         let done = Arc::new((Mutex::new(false), Condvar::new()));
@@ -169,7 +169,11 @@ impl Channel {
             let (lock, cv) = &*notify;
             let guard = lock.lock().unwrap();
             let result = cv
-                .wait_timeout_while(guard, AUTH_TIMEOUT, |done| !*done)
+                .wait_timeout_while(
+                    guard,
+                    end.saturating_duration_since(Instant::now()),
+                    |done| !*done,
+                )
                 .unwrap();
             if !*result.0 {
                 let _ = deadline_socket.shutdown(Shutdown::Both);
@@ -319,7 +323,8 @@ impl Channel {
         self.send_bytes(&serde_json::to_vec(value)?)
     }
     pub fn recv<T: DeserializeOwned>(&mut self) -> Result<T> {
-        Ok(serde_json::from_slice(&self.recv_bytes()?)?)
+        serde_json::from_slice(&self.recv_bytes()?)
+            .map_err(|_| anyhow::anyhow!("malformed or unknown transfer message"))
     }
     pub fn send_bytes(&mut self, data: &[u8]) -> Result<()> {
         ensure!(data.len() <= FRAME_LIMIT, "message too large");

@@ -56,7 +56,7 @@ p.mkdir(mode=0o700);(p/'unrelated').write_bytes(b'keep')
     def mode(value):app.execute(peer,"import pathlib,sys;pathlib.Path('/work/app-tests/management-http/mode').write_text(sys.argv[1])",value)
     def snapshot():return app.snapshot(peer,directory)
     result=run('install');assert result['code']==0,result
-    assert snapshot()['ssync'][3]==0o755 
+    assert snapshot()['ssync'][3]==0o755
     result=run('install');assert result['code']==0 and 'already installed' in result['out'],result
     before=snapshot();result=run('update');assert result['code']==0 and 'up to date' in result['out'],result;assert snapshot()==before
     app.record('native install and current-version update',details=result['out'])

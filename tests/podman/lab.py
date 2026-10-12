@@ -49,7 +49,7 @@ def require_rootless():
         raise RuntimeError("This lab requires rootless Podman; run without sudo.")
 
 
-def up():
+def up(profile="small"):
     require_rootless()
     for kind, name in [("network", NETWORK), *(("container", p) for p in PEERS)]:
         if exists(kind, name):
@@ -64,17 +64,18 @@ def up():
         for peer in PEERS:
             podman(
                 "create", "--name", peer, "--hostname", peer,
-                "--label", f"{LABEL}={VALUE}", "--pull=never",
+                "--label", f"{LABEL}={VALUE}", "--label", f"io.ssync.test-profile={profile}", "--pull=never",
                 "--network", NETWORK, "--no-hosts", "--user", "1000:1000",
                 "--cap-drop=all", "--security-opt=no-new-privileges",
                 "--read-only", "--read-only-tmpfs=false", "--image-volume=ignore",
-                "--tmpfs", "/work:rw,size=256m,mode=1777,nosuid,nodev,noexec",
+                "--tmpfs", f"/work:rw,size={'6g' if profile=='large' else '256m'},mode=1777,nosuid,nodev,noexec",
                 "--tmpfs", "/app:rw,size=32m,mode=1777,nosuid,nodev,exec",
                 "--tmpfs", "/tmp:rw,size=16m,mode=1777,nosuid,nodev,noexec",
-                "--memory=512m", "--memory-swap=512m", "--cpus=1", "--pids-limit=128",
+                *(["--tmpfs","/usr/local/bin:rw,size=32m,mode=755,nosuid,nodev,exec"] if profile=="large" else []),
+                f"--memory={'7g' if profile=='large' else '512m'}", f"--memory-swap={'7g' if profile=='large' else '512m'}", "--cpus=1", "--pids-limit=128",
                 "--env", "PYTHONDONTWRITEBYTECODE=1", "--workdir=/work",
                 "--entrypoint=python3", IMAGE, "-c",
-                "import time; time.sleep(2147483647)",
+                "import os,time\nwhile True:\n try:\n  while os.waitpid(-1,os.WNOHANG)[0]:pass\n except ChildProcessError:pass\n time.sleep(.1)",
             )
             created.append(peer)
             podman("start", peer)
@@ -105,13 +106,17 @@ def status():
             raise RuntimeError(f"Unexpected capabilities or devices: {peer}")
         if "no-new-privileges" not in host["SecurityOpt"]:
             raise RuntimeError(f"Missing privilege restriction: {peer}")
-        if host["Memory"] != 512 * 1024 * 1024 or host["PidsLimit"] != 128:
+        profile=cfg["Labels"].get("io.ssync.test-profile","small")
+        if profile not in ("small","large"):raise RuntimeError("Unexpected resource profile")
+        expected_memory=(7*1024 if profile=="large" else 512)*1024*1024
+        if host["Memory"] != expected_memory or host["PidsLimit"] != 128:
             raise RuntimeError(f"Unexpected resource limits: {peer}")
         if host["NanoCpus"] != 1_000_000_000 or host["MemorySwap"] != host["Memory"]:
             raise RuntimeError(f"Unexpected CPU/swap limits: {peer}")
         if host["PidMode"] == "host" or host["IpcMode"] == "host":
             raise RuntimeError(f"Unexpected shared host namespace: {peer}")
-        if set(host["Tmpfs"]) != {"/work", "/app", "/tmp"}:
+        expected_tmpfs={"/work", "/app", "/tmp"} | ({"/usr/local/bin"} if profile=="large" else set())
+        if set(host["Tmpfs"]) != expected_tmpfs:
             raise RuntimeError(f"Unexpected writable tmpfs: {peer}")
         if not data["State"]["Running"]:
             raise RuntimeError(f"Peer is not running: {peer}")
@@ -226,9 +231,10 @@ def down():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("up", "status", "smoke", "down"))
+    parser.add_argument("--profile",choices=("small","large"),default="small")
     args = parser.parse_args()
     try:
-        {"up": up, "status": status, "smoke": smoke, "down": down}[args.action]()
+        {"up": lambda:up(args.profile), "status": status, "smoke": smoke, "down": down}[args.action]()
     except subprocess.CalledProcessError as exc:
         print(exc.stderr.strip(), file=sys.stderr)
         return 1

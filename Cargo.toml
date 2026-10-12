@@ -10,7 +10,7 @@ repository = "https://github.com/brontoguana/ssync"
 [dependencies]
 anyhow = "1"
 blake3 = "1"
-ctrlc = "3"
+ctrlc = { version = "3", features = ["termination"] }
 hex = "0.4"
 hkdf = "0.12"
 libc = "0.2"
@@ -22,6 +22,7 @@ semver = "1"
 sha2 = "0.10"
 shell-words = "1"
 snow = "0.10"
+socket2 = "0.6"
 opaque-ke = { version = "4", features = ["argon2"] }
 ureq = { version = "3", features = ["json"] }
 zeroize = "1"

@@ -1,6 +1,6 @@
 # SSync implementation plan
 
-Native version 4.0.0; Java reference version 3.3. Native local install/update/uninstall supersede the earlier self-install exclusion. Revised after user decisions — 2026-10-12. Native implementation has not started. Authentication library/profile and remaining behavior details still need selection.
+Native version 4.0.0; Java reference version 3.3. Native local install/update/uninstall supersede the earlier self-install exclusion. Revised after user decisions — 2026-10-12. Native implementation now exists and is undergoing final validation. docs/CONTRACT.md and docs/PROTOCOL.md are the current frozen specification; proposals below preserve the decision history. Selected authentication: opaque-ke 4.0.1 with Argon2id and Noise NNpsk0. Initial verified target is Linux64 x86_64. Native local management is implemented.
 
 ## Scope and recommendation
 

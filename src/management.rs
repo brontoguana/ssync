@@ -155,6 +155,17 @@ fn install_bytes(root: &Root, bytes: &[u8], version: &str) -> Result<()> {
     println!("Installed SSync {version} in {:?}", root.path);
     Ok(())
 }
+fn display(s: &str) -> String {
+    s.chars()
+        .flat_map(|c| {
+            if c.is_control() && c != '\n' && c != '\t' {
+                c.escape_default().collect::<Vec<_>>()
+            } else {
+                vec![c]
+            }
+        })
+        .collect()
+}
 fn allowed_url(url: &str, test: bool) -> Result<()> {
     if test {
         ensure!(
@@ -174,6 +185,7 @@ fn download(url: &str, limit: usize, test: bool) -> Result<Vec<u8>> {
     allowed_url(url, test)?;
     let agent = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(60)))
+        .https_only(!test)
         .max_redirects(5)
         .build()
         .new_agent();
@@ -210,6 +222,7 @@ pub fn run(action: &str) -> Result<()> {
                 let m = root.metadata(name)?.context("installation changed")?;
                 root.remove(name, &fs::identity(&m))?;
             }
+            root.prune_empty_state();
             println!(
                 "Uninstalled SSync from {:?}; transfer data preserved",
                 root.path
@@ -237,9 +250,9 @@ pub fn run(action: &str) -> Result<()> {
             let current = semver::Version::parse(&installed.version)?;
             println!(
                 "Current: {current}; available: {available}\nRelease: {}\n{}\n{}",
-                release.name.as_deref().unwrap_or(&release.tag_name),
-                release.html_url,
-                release.body.as_deref().unwrap_or("No release notes")
+                display(release.name.as_deref().unwrap_or(&release.tag_name)),
+                display(&release.html_url),
+                display(release.body.as_deref().unwrap_or("No release notes"))
             );
             if available <= current {
                 println!("SSync is up to date");

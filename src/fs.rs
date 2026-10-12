@@ -101,6 +101,38 @@ pub fn absolute(path: &Path) -> Result<PathBuf> {
     }
     Ok(result)
 }
+fn case_sensitive(dir: &File) -> Result<()> {
+    let mut flags = 0i32;
+    // Linux FS_IOC_GETFLAGS is _IOR('f',1,long); its result argument is int*.
+    let rc = unsafe { libc::ioctl(dir.as_raw_fd(), 0x80086601u32 as _, &mut flags) };
+    if rc < 0 {
+        let code = std::io::Error::last_os_error().raw_os_error();
+        ensure!(
+            code == Some(libc::ENOTTY) || code == Some(libc::EOPNOTSUPP),
+            "cannot verify filesystem case sensitivity"
+        );
+    }
+    if rc == 0 {
+        ensure!(
+            flags & 0x40000000 == 0,
+            "case-insensitive directories are unsupported"
+        );
+    }
+    let mut stat = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    ensure!(
+        unsafe { libc::fstatfs(dir.as_raw_fd(), stat.as_mut_ptr()) } == 0,
+        "cannot inspect filesystem"
+    );
+    let kind = unsafe { stat.assume_init() }.f_type as u64;
+    ensure!(
+        [
+            0xef53, 0x9123683e, 0x58465342, 0x01021994, 0x858458f6, 0x794c7630
+        ]
+        .contains(&kind),
+        "filesystem type {kind:x} is unsupported; case-sensitive local Linux filesystems required"
+    );
+    Ok(())
+}
 pub struct Root {
     dir: File,
     pub path: PathBuf,
@@ -133,6 +165,7 @@ impl Root {
         );
         let dir = unsafe { File::from_raw_fd(fd as i32) };
         secure_dir(&dir.metadata()?)?;
+        case_sensitive(&dir)?;
         Ok(Self { dir, path })
     }
     pub fn try_clone(&self) -> Result<Self> {
@@ -167,6 +200,7 @@ impl Root {
     }
     pub fn read(&self, path: &str) -> Result<File> {
         valid(path)?;
+        self.dir(split(path).0)?;
         let file = beneath(&self.dir, path, libc::O_RDONLY | libc::O_NONBLOCK, 0)?;
         regular(&file.metadata()?)?;
         Ok(file)
@@ -175,8 +209,21 @@ impl Root {
         if !path.is_empty() {
             valid(path)?;
         }
-        let dir = beneath(&self.dir, path, libc::O_RDONLY | libc::O_DIRECTORY, 0)?;
+        let mut dir = beneath(&self.dir, "", libc::O_RDONLY | libc::O_DIRECTORY, 0)?;
         secure_dir(&dir.metadata()?)?;
+        case_sensitive(&dir)?;
+        let mut prefix = String::new();
+        if !path.is_empty() {
+            for part in path.split('/') {
+                if !prefix.is_empty() {
+                    prefix.push('/');
+                }
+                prefix.push_str(part);
+                dir = beneath(&self.dir, &prefix, libc::O_RDONLY | libc::O_DIRECTORY, 0)?;
+                secure_dir(&dir.metadata()?)?;
+                case_sensitive(&dir)?;
+            }
+        }
         Ok(dir)
     }
     pub fn list(&self, path: &str) -> Result<Vec<String>> {
@@ -331,6 +378,26 @@ impl Root {
         dir.sync_all()?;
         state.sync_all()?;
         Ok(())
+    }
+    pub fn prune_empty_state(&self) {
+        let Ok(dir) = beneath(&self.dir, STATE, libc::O_RDONLY | libc::O_DIRECTORY, 0) else {
+            return;
+        };
+        let Ok(m) = dir.metadata() else {
+            return;
+        };
+        if m.uid() != unsafe { libc::geteuid() } || m.mode() & 0o777 != 0o700 {
+            return;
+        }
+        let Ok(mut entries) = std::fs::read_dir(format!("/proc/self/fd/{}", dir.as_raw_fd()))
+        else {
+            return;
+        };
+        if entries.next().is_some() {
+            return;
+        }
+        let name = CString::new(STATE).expect("fixed name");
+        let _ = unsafe { libc::unlinkat(self.dir.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) };
     }
     pub fn remove(&self, path: &str, expected: &Identity) -> Result<()> {
         valid(path)?;
