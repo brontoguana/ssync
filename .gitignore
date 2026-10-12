@@ -1,0 +1,11 @@
+TRACKING.md
+DEBUGLOG.md
+.lore/
+target/
+dist/
+.DS_Store
+# Proprietary reference imports remain local; redistribution not established.
+ssync-codebase/
+ssync-interop-kit/
+__pycache__/
+*.pyc

@@ -1,0 +1,42 @@
+# SSync file map
+
+- `README.md` — project objective, status, and reference layout.
+- `IMPLEMENTATION_PLAN.md` — accepted wire break and CLI/API preservation, reusable-password requirements, accepted password lengths and `ssync pwd` contract, authentication proposal, safety boundary, and delivery stages.
+- `tests/podman/lab.py` — create, inspect, smoke-test, and remove two disposable labelled Podman peers without host directory mounts or published ports.
+- `tests/podman/README.md` — lab constraints, commands, fixture locations, native binary loading, and current validation status.
+- `tests/TEST_MATRIX.md` — required command, authentication, encryption, delta-efficiency, lifecycle, and file-safety release gates.
+- `PORT_REVIEW.md` — compatibility assessment, resolved dependency gap, Java verification evidence, source findings, and native-port verification sequence.
+- `CHANGELOG.md` — tracked project history.
+- `.gitignore` — excludes local tracking/debug notes and generated build artifacts.
+- `TRACKING.md` — recent local decisions and analysis; intentionally uncommitted.
+- `ssync-codebase/README.txt` — supplied snapshot scope and original build limitations.
+- `ssync-codebase/sh-additional/Tools/src/main/java/com/shelp/ssync/SSync.java` — Java CLI, connection lifecycle, transfer orchestration, and installation.
+- `ssync-codebase/sh-additional/Tools/src/main/java/com/shelp/ssync/SRPHandshake.java` — password authentication and directional encryption-key derivation.
+- `ssync-codebase/sh-additional/Tools/src/main/java/com/shelp/ssync/ProtocolException.java` — protocol mismatch classification.
+- `ssync-codebase/sh-additional/Tools/src/main/java/com/shelp/ssync/Script.java` — disabled-by-default file script hooks.
+- `ssync-codebase/sh-additional/Tools/pom.xml` and `ssync-codebase/sh-additional/Tools/build-ssync.sh` — original Maven dependency and build references.
+- `ssync-codebase/simplehelp_new/Utils_ExtendedCore/src/main/java/utils/files/FileMirror.java` — metadata exchange, chunk comparison, transfer, deletion, and destination-path validation.
+- `ssync-codebase/simplehelp_new/BouncyCastle/src/main/java/com/simplehelp/bouncycastle/` — original encryption wrappers; inherited implementation is supplied in the interop kit.
+- `ssync-codebase/simplehelp_new/Utils_Core/src/main/java/utils/string/hashing/DirHash.java` — directory hash compatibility reference.
+- `ssync-codebase/simplehelp_new/utils_foundation/src/main/java/utils/stream/StreamUtils.java` and `ssync-codebase/simplehelp_new/Utils_Core/src/main/java/utils/stream/VariableLengthStreamUtils.java` — serialization wrappers; inherited implementations are supplied in the interop kit.
+- `ssync-interop-kit/README.md` and `ssync-interop-kit/WIRE-NOTES.md` — runnable reference commands and detailed protocol/framing guide.
+- `ssync-interop-kit/build.py` and `ssync-interop-kit/compile-sources.txt` — offline Java reference source-overlay build using bundled dependencies; run in an ignored working copy.
+- `ssync-interop-kit/ssync-reference.jar` and `ssync-interop-kit/lib/` — Java 17+ compatibility oracle and its runtime dependencies; keep together.
+- `ssync-interop-kit/verify.py` — full transfer runner supporting a native CLI peer in all four Java/native direction pairings; run in an ignored working copy.
+- `ssync-interop-kit/harness/com/shelp/llm/ssync/Interop.java` — SRP/crypto self-test, vector generator, and minimal encrypted echo peer.
+- `ssync-interop-kit/vectors/` — deterministic encrypted-frame and primitive-serialization fixtures retained as historical protocol evidence; not native wire-compatibility gates.
+- `ssync-interop-kit/sources/simplehelp_jw/bouncycastle-parent/bc-standard/src/main/java/jwrapper/bouncycastle/BCUtilJW.java` — provider/MAC implementation, including legacy HMAC support.
+- `ssync-interop-kit/sources/simplehelp_jw/bouncycastle-parent/bc-common/src/main/java/jwrapper/bouncycastle/` — `AbstractBCUtil`, AES counter state, and MAC selection/locking.
+- `ssync-interop-kit/sources/simplehelp_jw/utils-foundation/src/main/java/jwrapper/general/stream/` — inherited primitive and variable-length serializers.
+- `ssync-interop-kit/sources/simplehelp_jw/utils-foundation/src/main/java/jwrapper/general/string/StringChunker.java` — original `.ssync` command tokenization.
+- `ssync-interop-kit/DEPENDENCIES.json`, `ssync-interop-kit/SOURCE-PROVENANCE.json`, and `ssync-interop-kit/SHA256SUMS.txt` — dependency identity, source provenance, and import-integrity records.
+- `Cargo.toml` / `Cargo.lock` — native Rust package, 4.0.0 version and locked dependencies.
+- `docs/CONTRACT.md` — frozen native CLI API and intentional Java migration differences.
+- `docs/PROTOCOL.md` — selected authentication/channel construction and bounds.
+- `src/auth.rs` — password generation/policy, OPAQUE authentication, Noise confirmations and bounded framing.
+- `src/cli.rs` — commands, qualifiers, aliases, password precedence and guidance.
+- `src/lib.rs` / `src/main.rs` — native library and command entrypoint.
+- `src/fs.rs` — Linux openat2 containment, no-follow regular-file access, private partials, atomic replacement and deletion.
+- `src/transfer.rs` — bounded fixed-block delta pipeline, verified resume, final-file validation, layouts, filters and post-manifest deletion.
+- `src/runtime.rs` — connection-direction independence, continuous listeners/connectors, rate limits, cancellation and safe config workers.
+- `src/management.rs` — native local installation, verified GitHub release updates, ownership-constrained uninstall.
