@@ -11,7 +11,8 @@ def main():
     a,b=lab.PEERS
     lab.podman('cp',str(app.ROOT/'tests/podman/proxy.py'),b+':/app/proxy.py')
     source='/work/app-tests/long-source';destination='/work/app-tests/long-destination'
-    app.fixture(a,source,2_400_000);sec.mkdir(b,destination)
+    app.execute(b,'import pathlib,shutil,sys;p=pathlib.Path(sys.argv[1]);shutil.rmtree(p,ignore_errors=True);p.mkdir()',destination)
+    app.fixture(a,source,2_400_000)
     server=sec.server(destination,quals=['merge']);sec.proxy('long')
     client=app.start(a,['force','put',f'{sec.IP}:40402',source]);started=time.monotonic()
     result=app.wait(client,timeout=240);measure=app.stats(result);assert app.wait(server)['code']==0

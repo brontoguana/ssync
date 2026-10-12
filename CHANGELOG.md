@@ -27,7 +27,7 @@
 - Added project README, development file map, and initial native-port assessment.
 - Verified the extraction against all ZIP entries and the 70 supplied SHA-256 manifest entries.
 
-## 4.0.0 — in development
+## 4.0.0 — prepared, publication pending
 
 - Freeze native 4.0 command contract, file-only operations, persistent passwords and fixed 200,000-byte delta transfers.
 - Exclude proprietary Java/reference imports from public Git while preserving local review copies.
@@ -43,3 +43,7 @@
 - Keep frequent valid credential reuse outside failed-guess budgets, configure dual-stack listening explicitly, and preserve numeric/diagnostic command compatibility.
 - Embed public Rust dependency notices with a local `licenses` command; retain private references outside public Git history.
 - Extend tests with SIGTERM/SIGKILL, deep/control-named files, destination links, rotation, quota boundaries and multi-GiB/high-offset transfers.
+
+- Complete97 recorded rootless-Podman checks against the exact release artifact, including2.4GB sparse-source/high-offset deltas and a121.85-second progressing transfer.
+- Verify Rust1.88 minimum compatibility, zero dependency advisories, embedded notices, static release archives/checksums and isolated archive install/uninstall.
+- Prepare public-repository/release/update smoke workflow; publication remains blocked by GitHub CLI HTTP401.

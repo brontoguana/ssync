@@ -36,3 +36,5 @@ Local private references, not published or needed for native builds:
 - `ssync-codebase/simplehelp_new/Utils_ExtendedCore/src/main/java/utils/files/FileMirror.java` — original 200,000-byte transfer/deletion/mtime behavior.
 - `ssync-interop-kit/README.md` / `ssync-interop-kit/verify.py` — runnable Java behavior oracle for any further migration questions.
 - `scripts/build-release.py` — versioned static Linux assets, source archive, dependency notices, source-commit manifest and SHA-256 checksums from committed source.
+- `tests/podman/longrun.py` — encrypted progressing transfer beyond socket idle deadline, with deterministic byte-rate proxy delay.
+- `tests/podman/public_smoke.py` — post-publication integrity/native install/update/uninstall smoke in the existing disposable peer, with scoped temporary egress and cleanup.
