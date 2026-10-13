@@ -1,6 +1,6 @@
 # SSync required validation matrix
 
-Status: native implementation and actual application/security/lifecycle/management runners exist. See ../docs/VALIDATION.md for executed evidence and platform/feature dispositions; publication/public updater smoke remain pending credentials. The rows below remain the required inventory, not an assertion that unexecuted combinations passed. Use the two-peer lab in `podman/README.md`, synthetic fixtures and passwords only, and executable version/hash plus exact settings in each report.
+Status: native implementation and actual application/security/lifecycle/management runners exist. See ../docs/VALIDATION.md for executed evidence and platform/feature dispositions; publication and the real public download/install/update/uninstall smoke passed on 2026-10-13. The rows below remain the required inventory, not an assertion that unexecuted combinations passed. Use the two-peer lab in `podman/README.md`, synthetic fixtures and passwords only, and executable version/hash plus exact settings in each report.
 
 ## Command/configuration contract
 

@@ -31,9 +31,12 @@ Passwords require 16+ Unicode characters; generated passwords use 24 uniformly s
 
 ## Installation and updates
 
-Download the platform binary and `checksums.txt` from a verified release. Check its SHA-256 before executing it. Release publication is pending; do not assume an unpublished download URL exists.
+Download the platform binary and `checksums.txt` from [SSync 4.0.0](https://github.com/brontoguana/ssync/releases/tag/v4.0.0). Check its SHA-256 before executing it. The public download, native install, up-to-date check and uninstall have been tested in the isolated Podman lab.
 
 ```bash
+curl -fLO https://github.com/brontoguana/ssync/releases/download/v4.0.0/ssync_linux_amd64
+curl -fLO https://github.com/brontoguana/ssync/releases/download/v4.0.0/checksums.txt
+sha256sum --ignore-missing --check checksums.txt
 chmod +x ./ssync_linux_amd64
 sudo ./ssync_linux_amd64 install
 sudo ssync update

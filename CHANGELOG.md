@@ -27,7 +27,7 @@
 - Added project README, development file map, and initial native-port assessment.
 - Verified the extraction against all ZIP entries and the 70 supplied SHA-256 manifest entries.
 
-## 4.0.0 — prepared, publication pending
+## 4.0.0 — 2026-10-13
 
 - Freeze native 4.0 command contract, file-only operations, persistent passwords and fixed 200,000-byte delta transfers.
 - Exclude proprietary Java/reference imports from public Git while preserving local review copies.
@@ -46,4 +46,6 @@
 
 - Complete97 recorded rootless-Podman checks against the exact release artifact, including2.4GB sparse-source/high-offset deltas and a121.85-second progressing transfer.
 - Verify Rust1.88 minimum compatibility, zero dependency advisories, embedded notices, static release archives/checksums and isolated archive install/uninstall.
-- Prepare public-repository/release/update smoke workflow; publication remains blocked by GitHub CLI HTTP401.
+- Publish the public repository and v4.0.0 release from verified source commit decf099c73ee1df6424f35b87e7ca767853b1236 with all six prepared assets.
+- Verify every downloaded release asset and run public checksum/download, native install, real GitHub up-to-date check and uninstall in the isolated Podman peer.
+- Add public download/checksum commands and update validation records to reflect completed delivery.

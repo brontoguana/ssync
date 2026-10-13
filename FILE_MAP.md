@@ -3,7 +3,7 @@
 - `README.md` — native usage, passwords, installation, platform scope and verification entrypoints.
 - `docs/CONTRACT.md` — frozen 4.0 CLI/configuration API and intentional Java migration differences.
 - `docs/PROTOCOL.md` — OPAQUE/Noise construction, authenticated transfer state machine, threat model and limits.
-- `docs/VALIDATION.md` — concrete test evidence, efficiency, platform scope and outstanding publication gates.
+- `docs/VALIDATION.md` — concrete test evidence, efficiency, platform scope and completed public release verification.
 - `IMPLEMENTATION_PLAN.md` — accepted requirements and historical implementation sequence; final contract is in docs/CONTRACT.md.
 - `PORT_REVIEW.md` — original source assessment and Java reference verification history.
 - `Cargo.toml` / `Cargo.lock` — Rust 4.0.0 package, minimum toolchain and pinned dependencies.
