@@ -30,12 +30,27 @@ fn run() -> Result<()> {
             true,
         )],
         skip: vec![],
-        dryrun: false,
+        dryrun: args[1] == "probe",
         nodelete: false,
     })?;
     channel.send(&Message::Approved { yes: true })?;
     let path = args.get(2).map(String::as_str).unwrap_or("source/x");
     match args[1].as_str() {
+        "probe" => {
+            let guess = args.get(3).map(String::as_bytes).unwrap_or(b"guess");
+            channel.send(&Message::File {
+                path: path.into(),
+                size: guess.len() as u64,
+                hash: blake3::hash(guess).to_hex().to_string(),
+                modified_secs: 1,
+                modified_nanos: 0,
+            })?;
+            let Message::Need { skip } = channel.recv()? else {
+                bail!("expected comparison result");
+            };
+            println!("Content guess matches: {skip}");
+            return Ok(());
+        }
         "path" => channel.send(&Message::Directory { path: path.into() })?,
         "unknown" => channel.send_bytes(b"{\"type\":\"Execute\",\"command\":\"evil\"}")?,
         "duplicate" => {

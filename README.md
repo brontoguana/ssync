@@ -29,7 +29,7 @@ ssync get server:1500 ./downloads
 ssync ?                        # interactive guidance
 ```
 
-Receiver directories must already exist. Without `merge`, items retain their source basenames. Receiver `merge` transfers a single directory's contents into the receiver root. Qualifiers precede the action: `merge`, `nodelete`, `dryrun`, `verify`, `verbose`, `force`/`noprompt`, `skip:substring`.
+Receiver directories must already exist. Unreleased hardening requires writable destination directories and configuration ancestry to be owned by the current user or root, without unsafe writable ancestors; read-only sources can belong to other users. Without `merge`, items retain their source basenames. Receiver `merge` transfers a single directory's contents into the receiver root. Qualifiers precede the action: `merge`, `nodelete`, `dryrun`, `verify`, `verbose`, `force`/`noprompt`, `skip:substring`.
 
 **The default mirrors selected directories, including deletion of extra entries in those scopes.** Use `nodelete` to retain extras. Single-file transfers never delete neighbouring files. Filters protect matching paths from transfer and deletion. Deletion requires a complete verified manifest; `dryrun` writes neither payload nor staging files. `force` skips the transfer prompt; it cannot override safety/authentication checks.
 
@@ -76,7 +76,7 @@ Both endpoints need **4.1+ for backup mode**. Ordinary transfer commands retain 
 
 Current inherited safety limits include **16 GiB per file, 10,000 manifest entries per source, and 16 GiB of private partial state per bay**. Oversized backups fail clearly rather than silently omitting files.
 
-Fixed 200,000-byte comparisons, bounded pipelining, verified resume and final content verification are reused. Each destination currently scans/hashes independently, reading unchanged contents for integrity; persistent indexing and sharing scans between destinations are future optimizations. See [backup command contract](docs/CONTRACT.md#backup-commands-41).
+Fixed 200,000-byte comparisons, bounded pipelining, verified resume and final content verification are reused. Each destination currently scans/hashes independently, reading unchanged contents for integrity; persistent indexing and sharing scans between destinations are future optimizations. `.ssync-state` is reserved for private resume files, which are excluded from transfers; unreleased hardening makes incompatible entries with that name fail clearly. See [backup command contract](docs/CONTRACT.md#backup-commands-41).
 
 ## Installation and updates
 
@@ -94,7 +94,7 @@ sudo ssync uninstall
 
 Install/update use native filesystem/network APIs and atomic replacement. Linux ownership metadata is attached to the staged executable, so the binary and ownership commit together. Updates consult this project's GitHub releases, print current/available versions and release notes, verify the exact platform asset's SHA-256, and preserve the installed executable on failed downloads/checks. An unowned or modified executable is never overwritten/removed. Uninstall removes owned installation files and preserves transfer data. Default path: `/usr/local/bin/ssync`; `SSYNC_INSTALL_DIR` supports private/disposable installations. Management is local-only, never accepted over the protocol or in `.ssync` lists.
 
-SHA-256 from the same GitHub release verifies artifact integrity, not independent publisher authenticity. GitHub account/release compromise remains a trust risk. The optional bootstrap above runs a shell script from this repository; installed SSync performs updates through native APIs without scripts. See [security/channel design](docs/PROTOCOL.md) and [command/migration contract](docs/CONTRACT.md).
+SHA-256 from the same GitHub release verifies artifact integrity, not independent publisher authenticity. GitHub account/release compromise remains a trust risk. The optional bootstrap above runs a shell script from this repository; installed SSync performs updates through native APIs without scripts. See [security/channel design](docs/PROTOCOL.md), [command/migration contract](docs/CONTRACT.md), and the [security review and unreleased fixes](docs/SECURITY_REVIEW.md).
 
 ## Development and verification
 

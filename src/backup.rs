@@ -216,6 +216,7 @@ fn load(file: &Path, client: bool) -> Result<Config> {
     match std::fs::symlink_metadata(&file) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let parent = Root::new(file.parent().context("config parent missing")?)?;
+            parent.check_writable()?;
             let dir = parent.dir("")?;
             let name = std::ffi::CString::new(
                 file.file_name()
@@ -263,13 +264,14 @@ fn load(file: &Path, client: bool) -> Result<Config> {
         Err(e) => return Err(e.into()),
         Ok(_) => {}
     }
-    let input = fs::open_local_file(&file)?;
+    let input = fs::open_config_file(&file)?;
     let meta = input.metadata()?;
     ensure!(
         meta.mode() & 0o077 == 0 && (meta.uid() == unsafe { libc::geteuid() } || meta.uid() == 0),
         "backup config must be private (chmod 600) and owned by current user or root"
     );
     ensure!(meta.len() <= CONFIG_LIMIT, "backup configuration too large");
+    let file_storage = fs::storage_key(&input)?;
     let mut data = Zeroizing::new(String::new());
     input
         .take(CONFIG_LIMIT + 1)
@@ -277,6 +279,7 @@ fn load(file: &Path, client: bool) -> Result<Config> {
         .map_err(|_| anyhow::anyhow!("cannot read bounded UTF-8 backup configuration"))?;
     let config = parse_config(&data, client)?;
     let mut roots = BTreeSet::new();
+    let mut storage: Vec<(u64, PathBuf)> = Vec::new();
     for entry in &config.entries {
         ensure!(
             !file.starts_with(&entry.path),
@@ -284,7 +287,19 @@ fn load(file: &Path, client: bool) -> Result<Config> {
         );
         let root = Root::new(&entry.path)?;
         let meta = root.metadata("")?.context("directory missing")?;
+        let key = root.storage_key()?;
+        ensure!(
+            file_storage.0 != key.0 || !file_storage.1.starts_with(&key.1),
+            "backup config must be outside source/bay directories, including filesystem aliases"
+        );
         if !client {
+            root.check_writable()?;
+            ensure!(
+                !storage.iter().any(|other| other.0 == key.0
+                    && (other.1.starts_with(&key.1) || key.1.starts_with(&other.1))),
+                "backup bays overlap through filesystem mount aliases"
+            );
+            storage.push(key);
             ensure!(
                 roots.insert((meta.dev(), meta.ino())),
                 "duplicate bay directory"

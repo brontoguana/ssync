@@ -11,6 +11,11 @@
 
 ## Unreleased
 
+- Review the native application, backup extension, bootstrap and release tooling for security and correctness; record findings and remaining boundaries in docs/SECURITY_REVIEW.md. Validate 146 Podman checks across review builds, 18 native/parser tests and two explicit sync-failure probes; retain the documented unsuppressed dependency advisory.
+- Prevent rejected IP traffic spending global authentication credits or filling admission state.
+- Detect backup bay overlap through bind-mount aliases using bounded descriptor/kernel mount metadata, prohibit recursive cross-device/subvolume access, and correctly allow explicitly selected directory mounts as source roots.
+- Tighten writable-directory ownership/ancestor checks, reject silent reserved-state filename collisions, bound ordinary config reads during concurrent growth, make directory changes durable, and try every resolved address before failing a connection.
+
 - Corrected the password-generation command to `ssync pwd`.
 - Made preservation of the efficient 200,000-byte block comparison/changed-block transfer method a required release gate, including bandwidth measurements.
 - Specified explicit mutual password/key confirmation before any file metadata or transfer-root access; expanded negative authentication tests.

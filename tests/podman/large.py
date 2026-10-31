@@ -35,9 +35,10 @@ with pathlib.Path(sys.argv[1],'sparse.bin').open('r+b') as f:f.seek(2_200_000_00
     assert measure['content_bytes']==200000 and digest(a)==digest(b),measure;app.record('multi-GiB one-block delta beyond 2GiB offset',stats=measure,metrics=result['metrics'])
     # Root-owned system installation into container-only tmpfs, using actual default directory.
     def root_command(action):return lab.podman('exec','--user','0',b,'/app/ssync',action)
-    out=root_command('install');assert 'Installed SSync 4.0.0' in out,out
+    version=app.command(b,['version'])['out'].strip().split()[-1].removeprefix('v')
+    out=root_command('install');assert 'Installed SSync '+version in out,out
     attrs=lab.podman('exec','--user','0',b,'python3','-c',"import os,pathlib,json; p=pathlib.Path('/usr/local/bin/ssync');m=p.stat();assert m.st_uid==0 and m.st_mode&0o777==0o755;print(os.getxattr(p,'user.ssync.install').decode())")
-    assert json_load(attrs)['version']=='4.0.0';assert 'already installed' in root_command('install')
+    assert json_load(attrs)['version']==version;assert 'already installed' in root_command('install')
     lab.podman('exec','--user','0',b,'python3','-c',"import pathlib;pathlib.Path('/usr/local/bin/unrelated').write_bytes(b'keep')")
     assert 'Uninstalled' in root_command('uninstall')
     lab.podman('exec','--user','0',b,'python3','-c',"import pathlib;assert not pathlib.Path('/usr/local/bin/ssync').exists();assert pathlib.Path('/usr/local/bin/unrelated').read_bytes()==b'keep'")

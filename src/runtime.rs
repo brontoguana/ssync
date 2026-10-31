@@ -7,7 +7,7 @@ use anyhow::{Result, bail, ensure};
 use std::{
     collections::HashMap,
     io::{Read, Seek, SeekFrom},
-    net::{IpAddr, Shutdown, TcpListener, TcpStream, ToSocketAddrs},
+    net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
     path::Path,
     sync::{
         Arc, Mutex,
@@ -90,6 +90,11 @@ impl Admission {
     pub fn allow(&mut self, ip: IpAddr, now: Instant) -> bool {
         self.ips
             .retain(|_, a| now.saturating_duration_since(a.last) < Duration::from_secs(300));
+        // Rejected traffic must not spend another client's admission credit or
+        // allocate new per-IP state once the listener-wide budget is exhausted.
+        if !Self::available(&mut self.global, now, 20., 1.) {
+            return false;
+        }
         if !self.ips.contains_key(&ip) && self.ips.len() >= 1024 {
             return false;
         }
@@ -99,18 +104,17 @@ impl Admission {
             failures: 0,
             blocked: now,
         });
-        let global = Self::token(&mut self.global, now, 20., 1.);
-        let local = Self::token(a, now, 5., 0.2);
-        global && local
-    }
-    fn token(a: &mut Attempts, now: Instant, max: f64, rate: f64) -> bool {
-        a.tokens = (a.tokens + now.saturating_duration_since(a.last).as_secs_f64() * rate).min(max);
-        a.last = now;
-        if a.blocked > now || a.tokens < 1. {
+        if !Self::available(a, now, 5., 0.2) {
             return false;
         }
+        self.global.tokens -= 1.;
         a.tokens -= 1.;
         true
+    }
+    fn available(a: &mut Attempts, now: Instant, max: f64, rate: f64) -> bool {
+        a.tokens = (a.tokens + now.saturating_duration_since(a.last).as_secs_f64() * rate).min(max);
+        a.last = now;
+        a.blocked <= now && a.tokens >= 1.
     }
     pub fn failure(&mut self, ip: IpAddr, now: Instant) {
         if let Some(a) = self.ips.get_mut(&ip) {
@@ -148,26 +152,30 @@ fn session(
     transfer::run(t, &mut channel, connector, &control.stop)?;
     Ok(())
 }
+fn connect_addresses(
+    addresses: impl IntoIterator<Item = SocketAddr>,
+    stop: &AtomicBool,
+) -> Result<TcpStream> {
+    let mut last_error = None;
+    for addr in addresses.into_iter().take(8) {
+        ensure!(!stop.load(Ordering::Relaxed), "cancelled");
+        match TcpStream::connect_timeout(&addr, Duration::from_secs(10)) {
+            Ok(socket) => return Ok(socket),
+            Err(e) => last_error = Some(e),
+        }
+    }
+    match last_error {
+        Some(e) => Err(e.into()),
+        None => bail!("hostname resolved to no addresses"),
+    }
+}
 pub fn transfer_command(t: Transfer, control: Arc<Control>) -> Result<()> {
     if let Some(host) = &t.host {
         loop {
             ensure!(!control.stop.load(Ordering::Relaxed), "cancelled");
-            let addresses = (host.as_str(), t.port)
-                .to_socket_addrs()?
-                .take(8)
-                .collect::<Vec<_>>();
-            let mut socket = None;
-            for addr in addresses {
-                match TcpStream::connect_timeout(&addr, Duration::from_secs(10)) {
-                    Ok(s) => {
-                        socket = Some(s);
-                        break;
-                    }
-                    Err(e) if !t.continuous() => return Err(e.into()),
-                    Err(_) => {}
-                }
-            }
-            if let Some(s) = socket {
+            let connected =
+                (|| connect_addresses((host.as_str(), t.port).to_socket_addrs()?, &control.stop))();
+            if let Ok(s) = connected {
                 let result = session(&t, s, None, &control);
                 if !t.continuous() {
                     return result;
@@ -175,8 +183,12 @@ pub fn transfer_command(t: Transfer, control: Arc<Control>) -> Result<()> {
                 if let Err(e) = result {
                     eprintln!("Continuous session failed; retrying: {e:#}");
                 }
-            } else if !t.continuous() {
-                bail!("connection failed");
+            } else {
+                let error = connected.unwrap_err();
+                if !t.continuous() {
+                    return Err(error);
+                }
+                eprintln!("Continuous connection failed; retrying: {error:#}");
             }
             for _ in 0..20 {
                 if control.stop.load(Ordering::Relaxed) {
@@ -350,7 +362,7 @@ pub fn diagnostic(action: &str, path: &Path) -> Result<()> {
 }
 pub fn config(path: &Path, control: Arc<Control>) -> Result<()> {
     use std::os::unix::fs::MetadataExt;
-    let mut file = fs::open_local_file(path)?;
+    let file = fs::open_config_file(path)?;
     let m = file.metadata()?;
     ensure!(
         m.mode() & 0o022 == 0 && m.len() <= 1_048_576,
@@ -360,8 +372,7 @@ pub fn config(path: &Path, control: Arc<Control>) -> Result<()> {
         m.uid() == unsafe { libc::geteuid() } || m.uid() == 0,
         ".ssync configuration must be owned by the current user or root"
     );
-    let mut data = String::new();
-    file.read_to_string(&mut data)?;
+    let data = read_config(file)?;
     let mut commands = Vec::new();
     let password = cli::password_input(std::env::var("SSYNC_PASSWORD").ok().as_deref())?;
     for line in data.lines() {
@@ -410,9 +421,65 @@ pub fn config(path: &Path, control: Arc<Control>) -> Result<()> {
     ensure!(!failed, "configuration transfer failed");
     Ok(())
 }
+fn read_config(reader: impl Read) -> Result<zeroize::Zeroizing<String>> {
+    let mut data = zeroize::Zeroizing::new(String::new());
+    reader.take(1_048_577).read_to_string(&mut data)?;
+    ensure!(data.len() <= 1_048_576, "oversized .ssync file");
+    Ok(data)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rejected_ips_cannot_spend_global_credit_or_fill_state() {
+        let mut admission = Admission::default();
+        let now = Instant::now();
+        let blocked = "127.0.0.1".parse().unwrap();
+        for _ in 0..5 {
+            assert!(admission.allow(blocked, now));
+            admission.failure(blocked, now);
+        }
+        let credit = admission.global.tokens;
+        for _ in 0..1000 {
+            assert!(!admission.allow(blocked, now));
+        }
+        assert_eq!(admission.global.tokens, credit);
+        assert!(admission.allow("127.0.0.2".parse().unwrap(), now));
+
+        let mut admission = Admission::default();
+        let now = Instant::now();
+        for i in 0..2000 {
+            admission.allow(IpAddr::from([10, 1, (i / 256) as u8, (i % 256) as u8]), now);
+        }
+        assert_eq!(admission.ips.len(), 20);
+    }
+    #[test]
+    fn config_growth_cannot_bypass_read_limit() {
+        use std::io::Write;
+        let mut file = tempfile::tempfile().unwrap();
+        assert_eq!(file.metadata().unwrap().len(), 0);
+        // Reproduce growth after an acceptable metadata check without a timing-dependent race.
+        file.write_all(&vec![b'#'; 2 * 1_048_576]).unwrap();
+        file.seek(SeekFrom::Start(0)).unwrap();
+        assert!(read_config(&mut file).is_err());
+        assert_eq!(file.stream_position().unwrap(), 1_048_577);
+        assert_eq!(
+            read_config(&b"# comment\n"[..]).unwrap().as_str(),
+            "# comment\n"
+        );
+    }
+    #[test]
+    fn connection_tries_remaining_addresses_and_honors_cancellation() {
+        let live = TcpListener::bind("127.0.0.1:0").unwrap();
+        let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+        let first = closed.local_addr().unwrap();
+        drop(closed);
+        let stop = AtomicBool::new(false);
+        assert!(connect_addresses([first, live.local_addr().unwrap()], &stop).is_ok());
+        assert!(connect_addresses([], &stop).is_err());
+        stop.store(true, Ordering::Relaxed);
+        assert!(connect_addresses([live.local_addr().unwrap()], &stop).is_err());
+    }
     #[test]
     fn authenticated_reuse_returns_admission_credit() {
         let mut a = Admission::default();

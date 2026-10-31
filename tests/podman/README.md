@@ -55,6 +55,7 @@ After `lab.py up`, build the static musl main binary and test-only adversary, th
 
 ```bash
 python3 tests/podman/application.py
+python3 tests/podman/review.py
 python3 tests/podman/security.py
 python3 tests/podman/lifecycle.py
 python3 tests/podman/inputs.py
@@ -66,7 +67,7 @@ python3 tests/podman/longrun.py
 
 Application setup clears only `/work/app-tests` inside the labelled peers. Job status/logs are stored in separate `/tmp/ssync-jobs`, so filling `/work` cannot erase exit evidence. PID1 reaps adopted test helpers, preventing zombie exhaustion under the128-PID cap. Helpers use unique monotonic job paths, synthetic passwords and container-local canaries. Logs/JSON reports remain under ignored `target/podman-*` on the developer machine. The binary's `licenses` output is compared with the tracked dependency notice text. Developer Python/proxy helpers are not included in the shipped executable.
 
-Management tests need a synthetic **4.0.1** executable, not a public release: copy `src/`, Cargo.toml/lock and THIRD_PARTY_NOTICES.txt under ignored `target/update-fixture-source`, change only that copy's package version to4.0.1, and build it with `CARGO_TARGET_DIR=target/update-fixture-build` for Linux musl. The fixture serves loopback HTTP through explicitly enabled `SSYNC_TEST_UPDATE=1`/`SSYNC_RELEASE_API_URL`; ordinary update mode uses this project's public GitHub API with HTTPS-only redirects. This checks native update behavior, not a public-release smoke. Once publication succeeds, separately verify the real public latest API/assets in a disposable egress-enabled peer.
+Management tests need a synthetic executable **newer than the current version**, not a public release: copy `src/`, Cargo.toml/lock and THIRD_PARTY_NOTICES.txt under ignored `target/update-fixture-source`, increment the package version in both that copy's Cargo.toml and root package entry in Cargo.lock, and build it with `CARGO_TARGET_DIR=target/update-fixture-build` for Linux musl. The fixture serves loopback HTTP through explicitly enabled `SSYNC_TEST_UPDATE=1`/`SSYNC_RELEASE_API_URL`; ordinary update mode uses this project's public GitHub API with HTTPS-only redirects. This checks native update behavior, not a public-release smoke. Once publication succeeds, separately verify the real public latest API/assets in a disposable egress-enabled peer.
 
 ## Large-file/system-install profile
 
@@ -81,3 +82,7 @@ After publication, `python3 tests/podman/public_smoke.py --tag v4.0.0` uses the 
 After the static binary and adversarial example build, run `python3 tests/podman/backup.py`. It creates private fixture configs in the peers, exercises two sources and two backup servers, password selection, efficiency, dryrun/deletion/filters, unavailable destinations, wrong-password and standard-protocol rejection, authenticated path/content attacks, ciphertext replay/tampering, interrupted resume and bay concurrency. It stops only its own jobs; report: `target/podman-backup/results.json`, raw output: redirect to `target/backup-podman.log`. Do not run concurrently with runners that reset `/work/app-tests`. Public install/update smoke temporarily adds labelled egress to a peer, then disconnects it; no host directories or ports are exposed.
 
 For 4.1 delivery, `python3 tests/podman/public_smoke.py --tag v4.1.0 --bootstrap --previous target/public-release-download/ssync_linux_amd64` additionally installs the previously checksum-verified 4.0 binary in the disposable root-owned prefix, tests the real public updater to 4.1, then tests the README bootstrap verbatim. The optional previous path must contain the earlier executable, not the new release. `compatibility.py --previous <verified-4.0-binary>` checks ordinary cross-version transfers; `bootstrap.py` checks mocked download/checksum failures against the actual installer in peer B.
+
+## Security review regressions
+
+`review.py` requires the large profile and runs after application setup, using only the existing two peers. It starts bounded metadata-only root-run preflights and a second unprivileged UID inside peer B to check bay/ancestor trust, confirms read-only other-user source support, checks continuous resolver-error retries/cancellation, and reproduces the documented authenticated comparison oracle with dry runs. No capabilities or host mounts are added. It requires the main binary and adversarial example; do not run concurrently with other suites. Filesystem durability probes and exact strace EIO commands are in `../../docs/SECURITY_REVIEW.md`.

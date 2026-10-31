@@ -75,7 +75,7 @@ pub fn password_input(env: Option<&str>) -> Result<Option<Zeroizing<String>>> {
     }
     if let Some(path) = std::env::var_os("SSYNC_PASSWORD_FILE") {
         use std::os::unix::fs::MetadataExt;
-        let f = crate::fs::open_local_file(std::path::Path::new(&path))?;
+        let f = crate::fs::open_config_file(std::path::Path::new(&path))?;
         let m = f.metadata()?;
         ensure!(
             m.uid() == unsafe { libc::geteuid() } && m.mode() & 0o077 == 0 && m.len() <= 4098,

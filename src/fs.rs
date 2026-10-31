@@ -81,7 +81,13 @@ fn beneath(dir: &File, path: &str, flags: i32, mode: u32) -> std::io::Result<Fil
     if fd < 0 {
         return Err(std::io::Error::last_os_error());
     }
-    Ok(unsafe { File::from_raw_fd(fd as i32) })
+    let file = unsafe { File::from_raw_fd(fd as i32) };
+    // Btrfs subvolumes can change st_dev without a separate VFS mount point.
+    // Keep them outside a root capability just like child/bind mounts.
+    if file.metadata()?.dev() != dir.metadata()?.dev() {
+        return Err(std::io::Error::from_raw_os_error(libc::EXDEV));
+    }
+    Ok(file)
 }
 pub fn absolute(path: &Path) -> Result<PathBuf> {
     let p = if path.is_absolute() {
@@ -175,6 +181,7 @@ impl Root {
         })
     }
     pub fn lock(&self) -> Result<()> {
+        self.check_writable()?;
         ensure!(
             unsafe { libc::flock(self.dir.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
             "destination root is busy"
@@ -206,11 +213,56 @@ impl Root {
         Ok(file)
     }
     pub fn dir(&self, path: &str) -> Result<File> {
+        self.checked_dir(path, false)
+    }
+    /// Writers must not trust directory owners who can rename/chmod their tree.
+    /// Read-only sources intentionally permit other owners (e.g. root backing up users).
+    pub fn check_writable(&self) -> Result<()> {
+        let mut parent = File::open("/")?;
+        trusted_ancestor(&parent.metadata()?)?;
+        for part in self.path.components() {
+            let std::path::Component::Normal(part) = part else {
+                continue;
+            };
+            let name = CString::new(part.as_encoded_bytes())?;
+            let fd = unsafe {
+                libc::openat(
+                    parent.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            };
+            ensure!(fd >= 0, "cannot verify destination ancestors");
+            parent = unsafe { File::from_raw_fd(fd) };
+            trusted_ancestor(&parent.metadata()?)?;
+        }
+        let current = parent.metadata()?;
+        let pinned = self.dir.metadata()?;
+        ensure!(
+            current.dev() == pinned.dev() && current.ino() == pinned.ino(),
+            "destination root changed"
+        );
+        secure_dir(&pinned)?;
+        trusted_owner(&pinned)
+    }
+    /// Map a configured root into its filesystem's namespace, including bind aliases.
+    /// fdinfo selects the exact mount, avoiding ambiguity from stacked mount points.
+    pub fn storage_key(&self) -> Result<(u64, PathBuf)> {
+        storage_key(&self.dir)
+    }
+    fn write_dir(&self, path: &str) -> Result<File> {
+        self.check_writable()?;
+        self.checked_dir(path, true)
+    }
+    fn checked_dir(&self, path: &str, writable: bool) -> Result<File> {
         if !path.is_empty() {
             valid(path)?;
         }
         let mut dir = beneath(&self.dir, "", libc::O_RDONLY | libc::O_DIRECTORY, 0)?;
         secure_dir(&dir.metadata()?)?;
+        if writable {
+            trusted_owner(&dir.metadata()?)?;
+        }
         case_sensitive(&dir)?;
         let mut prefix = String::new();
         if !path.is_empty() {
@@ -221,6 +273,9 @@ impl Root {
                 prefix.push_str(part);
                 dir = beneath(&self.dir, &prefix, libc::O_RDONLY | libc::O_DIRECTORY, 0)?;
                 secure_dir(&dir.metadata()?)?;
+                if writable {
+                    trusted_owner(&dir.metadata()?)?;
+                }
                 case_sensitive(&dir)?;
             }
         }
@@ -236,6 +291,9 @@ impl Root {
                 .into_string()
                 .map_err(|_| anyhow::anyhow!("non-UTF8 filename unsupported"))?;
             if name == STATE {
+                // Reserved data must never disappear from a successful backup silently.
+                // Only recognizable private resume state is intentionally excluded.
+                check_internal_state(&dir)?;
                 continue;
             }
             valid(&name)?;
@@ -252,7 +310,7 @@ impl Root {
         valid(path)?;
         let mut prefix = String::new();
         for part in path.split('/') {
-            let parent = self.dir(&prefix)?;
+            let parent = self.write_dir(&prefix)?;
             let name = CString::new(part)?;
             let rc = unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) };
             if rc != 0 {
@@ -260,22 +318,28 @@ impl Root {
                 if e.kind() != std::io::ErrorKind::AlreadyExists {
                     return Err(e.into());
                 }
+            } else {
+                // A successful backup must retain newly created (including empty) directories.
+                parent.sync_all()?;
             }
             if !prefix.is_empty() {
                 prefix.push('/');
             }
             prefix.push_str(part);
-            self.dir(&prefix)?;
+            self.write_dir(&prefix)?;
         }
         Ok(())
     }
     pub fn state(&self) -> Result<File> {
+        let root = self.write_dir("")?;
         let name = CString::new(STATE)?;
         if unsafe { libc::mkdirat(self.dir.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
             let e = std::io::Error::last_os_error();
             if e.kind() != std::io::ErrorKind::AlreadyExists {
                 return Err(e.into());
             }
+        } else {
+            root.sync_all()?;
         }
         let dir = beneath(&self.dir, STATE, libc::O_RDONLY | libc::O_DIRECTORY, 0)?;
         let meta = dir.metadata()?;
@@ -355,7 +419,7 @@ impl Root {
             "destination changed during transfer"
         );
         let (parent, name) = split(target);
-        let dir = self.dir(parent)?;
+        let dir = self.write_dir(parent)?;
         // Recheck final type without following it, and directory identity relative to root.
         ensure!(
             &self.metadata(target)?.as_ref().map(identity) == expected,
@@ -380,6 +444,9 @@ impl Root {
         Ok(())
     }
     pub fn prune_empty_state(&self) {
+        if self.check_writable().is_err() {
+            return;
+        }
         let Ok(dir) = beneath(&self.dir, STATE, libc::O_RDONLY | libc::O_DIRECTORY, 0) else {
             return;
         };
@@ -397,14 +464,16 @@ impl Root {
             return;
         }
         let name = CString::new(STATE).expect("fixed name");
-        let _ = unsafe { libc::unlinkat(self.dir.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) };
+        if unsafe { libc::unlinkat(self.dir.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) } == 0 {
+            let _ = self.dir.sync_all();
+        }
     }
     pub fn remove(&self, path: &str, expected: &Identity) -> Result<()> {
         valid(path)?;
         let meta = self.metadata(path)?.context("deletion entry disappeared")?;
         ensure!(&identity(&meta) == expected, "deletion entry changed");
         let (parent, name) = split(path);
-        let dir = self.dir(parent)?;
+        let dir = self.write_dir(parent)?;
         let name = CString::new(name)?;
         ensure!(
             unsafe {
@@ -417,6 +486,7 @@ impl Root {
             "safe deletion failed: {}",
             std::io::Error::last_os_error()
         );
+        dir.sync_all()?;
         Ok(())
     }
 }
@@ -429,6 +499,121 @@ fn secure_dir(m: &Metadata) -> Result<()> {
         "directory is writable by other users or not a directory"
     );
     Ok(())
+}
+fn trusted_owner(m: &Metadata) -> Result<()> {
+    ensure!(
+        m.uid() == unsafe { libc::geteuid() } || m.uid() == 0,
+        "untrusted directory owner; writable destinations must be owned by the current user or root"
+    );
+    Ok(())
+}
+fn read_kernel_file(path: &str, limit: u64) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    File::open(path)?.take(limit + 1).read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() as u64 <= limit,
+        "kernel metadata exceeds safety limit"
+    );
+    Ok(bytes)
+}
+pub fn storage_key(file: &File) -> Result<(u64, PathBuf)> {
+    let fd = file.as_raw_fd();
+    let info = read_kernel_file(&format!("/proc/self/fdinfo/{fd}"), 8192)?;
+    let id: u64 = std::str::from_utf8(&info)?
+        .lines()
+        .find_map(|line| line.strip_prefix("mnt_id:"))
+        .context("file mount ID unavailable")?
+        .trim()
+        .parse()?;
+    // Use kernel-resolved dentry spelling, not an operator path containing aliases.
+    let resolved = std::fs::read_link(format!("/proc/self/fd/{fd}"))?;
+    let mounts = read_kernel_file("/proc/self/mountinfo", 16 * 1024 * 1024)?;
+    Ok((
+        file.metadata()?.dev(),
+        mounted_path(&mounts, id, &resolved)?,
+    ))
+}
+fn mount_path(bytes: &[u8]) -> Result<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    let mut path = Vec::new();
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == b'\\' {
+            path.push(match bytes.get(at..at + 4) {
+                Some(b"\\040") => b' ',
+                Some(b"\\011") => b'\t',
+                Some(b"\\012") => b'\n',
+                Some(b"\\134") => b'\\',
+                _ => anyhow::bail!("invalid kernel mount path escape"),
+            });
+            at += 4;
+        } else {
+            path.push(bytes[at]);
+            at += 1;
+        }
+    }
+    let path = PathBuf::from(std::ffi::OsString::from_vec(path));
+    ensure!(path.is_absolute(), "invalid kernel mount path");
+    Ok(path)
+}
+fn mounted_path(table: &[u8], id: u64, selected: &Path) -> Result<PathBuf> {
+    for line in table.split(|b| *b == b'\n') {
+        let fields = line.split(|b| *b == b' ').take(6).collect::<Vec<_>>();
+        let parsed = fields
+            .first()
+            .and_then(|s| std::str::from_utf8(s).ok())
+            .and_then(|s| s.parse::<u64>().ok());
+        if parsed == Some(id) {
+            ensure!(fields.len() == 6, "incomplete kernel mount metadata");
+            let root = mount_path(fields[3])?;
+            let point = mount_path(fields[4])?;
+            let suffix = selected
+                .strip_prefix(point)
+                .context("directory mount changed")?;
+            return Ok(root.join(suffix));
+        }
+    }
+    anyhow::bail!("directory mount metadata unavailable")
+}
+fn trusted_ancestor(m: &Metadata) -> Result<()> {
+    trusted_owner(m)?;
+    ensure!(
+        m.is_dir() && (m.mode() & 0o022 == 0 || m.mode() & libc::S_ISVTX != 0),
+        "destination ancestor is writable by other users without sticky protection"
+    );
+    Ok(())
+}
+fn check_internal_state(parent: &File) -> Result<()> {
+    let check = || -> Result<()> {
+        let state = beneath(parent, STATE, libc::O_RDONLY | libc::O_DIRECTORY, 0)?;
+        let meta = state.metadata()?;
+        ensure!(meta.mode() & 0o777 == 0o700, "state directory mode");
+        let owner = meta.uid();
+        let mut count = 0;
+        for entry in std::fs::read_dir(format!("/proc/self/fd/{}", state.as_raw_fd()))? {
+            let name = entry?.file_name();
+            let name = name.to_str().context("state filename")?;
+            ensure!(
+                name.len() == 64 && name.bytes().all(|b| b.is_ascii_hexdigit()),
+                "state filename"
+            );
+            let file = beneath(&state, name, libc::O_PATH, 0)?;
+            let meta = file.metadata()?;
+            regular(&meta)?;
+            ensure!(
+                meta.uid() == owner && meta.mode() & 0o777 == 0o600,
+                "state file owner/mode"
+            );
+            count += 1;
+            ensure!(count <= 128, "state file limit");
+        }
+        Ok(())
+    };
+    check().map_err(|_| {
+        anyhow::anyhow!(
+            "reserved .ssync-state entry is not recognized private resume state; inspect it locally and relocate unrelated data"
+        )
+    })
 }
 pub fn regular(m: &Metadata) -> Result<()> {
     ensure!(
@@ -465,11 +650,68 @@ pub fn open_local_file(path: &Path) -> Result<File> {
             .context("filename must be UTF8")?,
     )
 }
+pub fn open_config_file(path: &Path) -> Result<File> {
+    let path = absolute(path)?;
+    let parent = Root::new(path.parent().context("config parent missing")?)?;
+    parent.check_writable()?;
+    parent.read(
+        path.file_name()
+            .context("config filename missing")?
+            .to_str()
+            .context("filename must be UTF8")?,
+    )
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
+    #[test]
+    fn bind_alias_storage_paths_and_escaped_mounts() {
+        let table = b"10 1 8:1 / / rw - ext4 /dev/test rw\n20 10 8:1 /srv/bays/one/sub /alias rw - ext4 /dev/test rw\n21 10 8:1 /other /alias rw - ext4 /dev/test rw\n30 10 8:1 /srv/bays/one/space\\040name /space\\040mount rw - ext4 /dev/test rw\n";
+        let bay = mounted_path(table, 10, Path::new("/srv/bays/one")).unwrap();
+        let alias = mounted_path(table, 20, Path::new("/alias/files")).unwrap();
+        assert!(alias.starts_with(&bay));
+        assert!(
+            !mounted_path(table, 21, Path::new("/alias/files"))
+                .unwrap()
+                .starts_with(&bay)
+        );
+        assert_eq!(
+            mounted_path(table, 30, Path::new("/space mount/files")).unwrap(),
+            Path::new("/srv/bays/one/space name/files")
+        );
+        assert_eq!(
+            mount_path(b"/a\\134b\\011c\\012d").unwrap(),
+            Path::new("/a\\b\tc\nd")
+        );
+        assert!(mounted_path(table, 999, Path::new("/missing")).is_err());
+        assert!(mounted_path(table, 20, Path::new("/outside")).is_err());
+        assert!(mount_path(b"/bad\\999").is_err());
+        let temp = tempfile::tempdir().unwrap();
+        let root = Root::new(temp.path()).unwrap();
+        let (device, physical) = root.storage_key().unwrap();
+        assert_eq!(device, root.metadata("").unwrap().unwrap().dev());
+        assert!(physical.is_absolute() && physical.ends_with(temp.path().file_name().unwrap()));
+        let config = temp.path().join("config");
+        std::fs::write(&config, b"private config").unwrap();
+        let file_key = storage_key(&File::open(config).unwrap()).unwrap();
+        assert_eq!(device, file_key.0);
+        assert!(file_key.1.starts_with(&physical));
+    }
+    #[test]
+    fn reserved_user_data_is_not_silently_omitted() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Root::new(temp.path()).unwrap();
+        std::fs::write(temp.path().join(STATE), b"user data").unwrap();
+        assert!(root.list("").is_err());
+        std::fs::remove_file(temp.path().join(STATE)).unwrap();
+        let id = "a".repeat(64);
+        let _partial = root.stage(&id).unwrap();
+        assert!(root.list("").unwrap().is_empty());
+        std::fs::write(temp.path().join(STATE).join("user-data"), b"important").unwrap();
+        assert!(root.list("").is_err());
+    }
     #[test]
     fn containment() {
         let temp = tempfile::tempdir().unwrap();

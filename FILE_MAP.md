@@ -3,6 +3,8 @@
 - `README.md` — native usage, passwords, installation, platform scope and verification entrypoints.
 - `docs/CONTRACT.md` — frozen 4.0 CLI/configuration API and intentional Java migration differences.
 - `docs/PROTOCOL.md` — OPAQUE/Noise construction, authenticated transfer state machine, threat model and limits.
+- `docs/SECURITY_REVIEW.md` — security/correctness findings, fixes, remaining trust boundaries and review evidence.
+- `tests/fs_durability.rs` / `tests/podman/review.py` — injected directory-sync failures and multi-user path-trust/DNS/comparison-disclosure regressions.
 - `docs/VALIDATION.md` — concrete test evidence, efficiency, platform scope and completed public release verification.
 - `IMPLEMENTATION_PLAN.md` — accepted requirements and historical implementation sequence; final contract is in docs/CONTRACT.md.
 - `PORT_REVIEW.md` — original source assessment and Java reference verification history.
@@ -10,7 +12,7 @@
 - `src/main.rs` / `src/lib.rs` — executable dispatch and native library modules.
 - `src/cli.rs` — qualifiers, Java-compatible aliases, password inputs, guidance and local-only commands.
 - `src/auth.rs` — unbiased Base58 generation, OPAQUE/Argon2id, Noise confirmation and bounded framing.
-- `src/fs.rs` — Linux openat2 capabilities, directory/FS checks, no-follow single-link files, private partials and atomic replacement.
+- `src/fs.rs` — Linux openat2 capabilities, trusted write ancestry, device/mount-alias checks, reserved-state validation, durable directory operations, private partials and atomic replacement.
 - `src/transfer.rs` — fixed 200,000-byte pipeline, overlapped comparison/streaming, verified resume, layouts, filters and verified-state deletion.
 - `src/backup.rs` — private line configs/templates, password-selected upload-only bays, bounded independent multi-server backup cycles.
 - `install.sh` — checksum-verified latest Linux release bootstrap, then native installation.

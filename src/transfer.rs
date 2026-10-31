@@ -95,22 +95,28 @@ fn selected(path: &Path) -> Result<Selected> {
         .context("non UTF8 name")?
         .to_string();
     fs::valid(&name)?;
-    let parent = Root::new(abs.parent().context("missing parent")?)?;
-    let meta = parent.metadata(&name)?.context("source does not exist")?;
-    if meta.is_dir() {
-        Ok(Selected {
-            root: Root::new(&abs)?,
+    // A locally selected directory can itself be a mount/subvolume. Opening it
+    // beneath its parent would incorrectly apply the child-mount prohibition.
+    match Root::new(&abs) {
+        Ok(root) => Ok(Selected {
+            root,
             path: String::new(),
             name,
             is_dir: true,
-        })
-    } else {
-        Ok(Selected {
-            root: parent,
-            path: name.clone(),
-            name,
-            is_dir: false,
-        })
+        }),
+        Err(directory_error) => {
+            let parent = Root::new(abs.parent().context("missing parent")?)?;
+            let meta = parent.metadata(&name)?.context("source does not exist")?;
+            if meta.is_dir() {
+                return Err(directory_error);
+            }
+            Ok(Selected {
+                root: parent,
+                path: name.clone(),
+                name,
+                is_dir: false,
+            })
+        }
     }
 }
 fn filtered(path: &str, skip: &[String]) -> bool {
