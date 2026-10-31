@@ -4,6 +4,7 @@
 
 - Add persistent password-selected backup bays and multi-server latest-copy backup clients, without Restic or remote restoration.
 - Add private line-based configuration templates, bounded bay authentication, and backup protocol separation.
+- Add isolated backup, cross-version interoperability, installer failure and public upgrade tests; document inherited file/entry/state limits.
 - Refresh TLS/trust-store dependencies and embedded notices; document the remaining unselected crypto-bigint advisory without suppressing it.
 - Publish a checksum-verified copy-and-paste installation command at the top of the README.
 

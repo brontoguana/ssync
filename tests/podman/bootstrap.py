@@ -13,7 +13,7 @@ def main():
 p=pathlib.Path('/app/bootstrap-tools');p.mkdir(exist_ok=True)
 p=pathlib.Path('/app/bootstrap-install');p.mkdir(exist_ok=True)
 curl=pathlib.Path('/app/bootstrap-tools/curl')
-curl.write_text('''+repr('''#!/usr/bin/env python3
+curl.write_text('''+repr(r'''#!/usr/bin/env python3
 import hashlib,os,pathlib,sys
 args=sys.argv[1:];dest=pathlib.Path(args[args.index('-o')+1]);mode=os.environ['SSYNC_BOOTSTRAP_CASE']
 if mode=='download-failure':sys.exit(22)
@@ -28,6 +28,7 @@ dest.write_bytes(data)
 ''')+''')
 curl.chmod(0o755)
 ''')
+    app.execute(peer,"import py_compile;py_compile.compile('/app/bootstrap-tools/curl',doraise=True)")
     env={'SSYNC_INSTALL_DIR':'/app/bootstrap-install'}
     install=app.command(peer,['install'],env=env);assert install['code']==0,install
     before=app.execute(peer,"import hashlib,pathlib;print(hashlib.sha256(pathlib.Path('/app/bootstrap-install/ssync').read_bytes()).hexdigest())")
@@ -38,6 +39,9 @@ r=subprocess.run(['bash','/app/install.sh'],env=env,capture_output=True,text=Tru
 print(json.dumps({'code':r.returncode,'out':r.stdout,'err':r.stderr}))
 ''',mode,timeout=55))
         assert (result['code']==0)==(mode=='valid'),(mode,result)
+        if mode!='valid':assert result['out']=='',(mode,result)
+        if mode=='bad-checksum':assert 'checksum failed' in result['err'],result
+        if mode in ('duplicate','missing'):assert 'checksum entry' in result['err'],result
         after=app.execute(peer,"import hashlib,pathlib;print(hashlib.sha256(pathlib.Path('/app/bootstrap-install/ssync').read_bytes()).hexdigest())")
         assert before==after
         app.record('bootstrap artifact checks preserve installation',mode=mode)

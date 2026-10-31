@@ -74,6 +74,8 @@ The server stays running; the client performs one cycle and exits without prompt
 
 Both endpoints need **4.1+ for backup mode**. Ordinary transfer commands retain the 4.0 protocol. Backup mode accepts uploads only: no network restoration, remote execution, Restic integration or at-rest encryption. Retrieve files with normal administrator server access. Blank/comment lines are ignored, `=` splits at its first occurrence, and IPv6 servers use `@[address][:port]`. Configuration limits are 32 servers and 32 sources/bays. Passwords must be unique within each file; server bay directories must not overlap.
 
+Current inherited safety limits include **16 GiB per file, 10,000 manifest entries per source, and 16 GiB of private partial state per bay**. Oversized backups fail clearly rather than silently omitting files.
+
 Fixed 200,000-byte comparisons, bounded pipelining, verified resume and final content verification are reused. Each destination currently scans/hashes independently, reading unchanged contents for integrity; persistent indexing and sharing scans between destinations are future optimizations. See [backup command contract](docs/CONTRACT.md#backup-commands-41).
 
 ## Installation and updates

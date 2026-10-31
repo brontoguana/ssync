@@ -8,11 +8,13 @@ import application as app
 from application import lab
 
 NETWORK='ssync-public-smoke-net'
-parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--tag',required=True);parser.add_argument('--bootstrap',action='store_true');args=parser.parse_args()
+parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--tag',required=True);parser.add_argument('--bootstrap',action='store_true');parser.add_argument('--previous',type=Path);args=parser.parse_args()
 status=lab.status();peer=lab.PEERS[1]
 if lab.owned('container',peer)['Config']['Labels'].get('io.ssync.test-profile')!='large':raise SystemExit('Use bounded large profile for disposable /usr/local/bin tmpfs.')
 if lab.exists('network',NETWORK):raise SystemExit('Public smoke network already exists; inspect before removing.')
 connected=False
+# Retire only known lab executables to keep the bounded executable tmpfs available.
+app.execute(peer,"import pathlib;[pathlib.Path('/app/'+name).unlink(missing_ok=True) for name in ['ssync','adversary','public-ssync','previous-ssync']]")
 try:
     lab.podman('network','create','--label',f'{lab.LABEL}={lab.VALUE}',NETWORK)
     lab.podman('network','connect',NETWORK,peer);connected=True
@@ -34,6 +36,16 @@ print(json.dumps({'tag':release['tag_name'],'sha256':hashlib.sha256(binary).hexd
     artifact=json.loads(app.execute(peer,code,args.tag,timeout=150))
     expected='SSync v'+args.tag.removeprefix('v')
     assert lab.podman('exec',peer,'/app/public-ssync','version')==expected
+    upgraded=None
+    if args.previous:
+        lab.podman('cp',str(args.previous),peer+':/app/previous-ssync')
+        app.execute(peer,"import pathlib;pathlib.Path('/app/previous-ssync').chmod(0o755)")
+        lab.podman('exec','--user','0',peer,'/app/previous-ssync','install')
+        upgraded=lab.podman('exec','--user','0',peer,'/usr/local/bin/ssync','update',timeout=120)
+        assert 'Installed SSync '+args.tag.removeprefix('v') in upgraded,upgraded
+        assert lab.podman('exec',peer,'/usr/local/bin/ssync','version')==expected
+        lab.podman('exec','--user','0',peer,'/usr/local/bin/ssync','uninstall')
+        lab.podman('exec',peer,'rm','/app/previous-ssync')
     installed=lab.podman('exec','--user','0',peer,'/app/public-ssync','install')
     # No SSYNC_TEST_* overrides: this is the real public GitHub updater.
     updated=lab.podman('exec','--user','0',peer,'/usr/local/bin/ssync','update',timeout=90)
@@ -46,7 +58,7 @@ print(json.dumps({'tag':release['tag_name'],'sha256':hashlib.sha256(binary).hexd
             'curl -fsSL https://raw.githubusercontent.com/brontoguana/ssync/main/install.sh | bash',timeout=150)
         assert lab.podman('exec',peer,'/usr/local/bin/ssync','version')==expected
         lab.podman('exec','--user','0',peer,'/usr/local/bin/ssync','uninstall')
-    result={'artifact':artifact,'install':installed,'update':updated,'uninstall':removed,'bootstrap':bootstrap,'rootless':True,'host_mounts':[]}
+    result={'artifact':artifact,'install':installed,'update':updated,'uninstall':removed,'bootstrap':bootstrap,'upgrade':upgraded,'rootless':True,'host_mounts':[]}
     out=app.ROOT/'target/public-smoke.json';out.write_text(json.dumps(result,indent=2)+'\n');print(json.dumps(result,indent=2))
 finally:
     if connected:lab.podman('network','disconnect',NETWORK,peer)

@@ -13,7 +13,9 @@ def main():
     source='/work/app-tests/source'
     app.fixture(a,source,2_000_003)
     for old_peer in (a,b):
-        for peer in (a,b):lab.podman('cp',str(args.previous if peer==old_peer else app.BINARY),peer+':/app/ssync')
+        for peer in (a,b):
+            lab.podman('cp',str(args.previous if peer==old_peer else app.BINARY),peer+':/app/ssync')
+            app.execute(peer,"import pathlib;pathlib.Path('/app/ssync').chmod(0o755)")
         for server_sends in (False,True):
             dest=f'/work/app-tests/compat-{old_peer}-{server_sends}'
             app.execute(b,'import pathlib,sys;pathlib.Path(sys.argv[1]).mkdir()',dest)
