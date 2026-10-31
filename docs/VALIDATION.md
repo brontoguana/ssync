@@ -14,7 +14,7 @@ OPAQUE4.0.1, Ristretto255/TripleDH/SHA512 with fixed Argon2id64MiB/3passes/1lane
 
 Native installation attaches ownership to the staged executable before one atomic rename. Update downloads exact GitHub release assets and checks SHA256 over HTTPS; failed checks/downloads preserve old bytes. Uninstall verifies ownership/hash and leaves transfer/unrelated data. Checksums from the same release do not independently authenticate the publisher; account/release compromise remains a trust risk. Neither SSync integration nor the current full dependency set is claimed independently audited.
 
-## Executed evidence
+## Executed evidence (4.0.0, 2026-10-13)
 
 - **97 recorded actual Podman checks**:13 application,33 security,14 lifecycle,12 input/API,11 advanced,9 management,4 large-profile,1 long-duration. The actual --bin-only release artifact, not only the dev/example build, was rerun through these application groups. All outside-root canaries survived.
 - Native unit/path tests and20,000 deterministic parser mutations pass; lint with warnings denied and formatting pass.
@@ -52,3 +52,11 @@ Verified release binary SHA256: `bfdf24deeb11dcb2a1c09685df1f2f7034725f25f596420
 The matrix is a required-case inventory, not proof of every possible OS/fault combination. Live OS-random-failure injection and each filesystem/driver race permutation were not executed; unbiased sampling/error handling and unsupported-operation paths are source/unit-reviewed. No unsupported-platform claim is inferred from Linux container passes.
 
 Private Java/reference sources/JARs remain on disk, ignored and absent from Git/source archives. Public dependency notices are embedded/distributed. Published assets: static raw Linux binary, versioned archive, public-source archive, notices, source-commit manifest and checksums. Formatting/lint/unit/parser/dependency/API/security/efficiency/management gates passed locally, and public repository/push/release and the real public installation/update/uninstall smoke are complete. A newer-version replacement was validated using the isolated synthetic 4.0.1 fixture; only 4.0.0 is publicly released, so the public updater smoke validates its up-to-date path. The published source archive records the pre-publication status; this follow-up documentation records completed delivery without changing the verified binary or release tag.
+
+## 4.1.0 backup validation — 2026-10-31
+
+Backup implementation reuses the existing verified delta/receiver filesystem engine. Private fixtures run in the same labelled two-peer rootless large-profile lab, with no host mounts or published ports. `tests/podman/backup.py` records backup results; ordinary application/security/lifecycle runners check the shared code. Final counts and public delivery results are recorded after completion below.
+
+Dependency refresh: rustls 0.23.46, rustls-webpki 0.103.16, webpki-roots 1.0.11 resolve six new TLS/trust-store advisories since 4.0.0. Regenerated public notices are embedded in the binary. **Raw `cargo audit` still reports one transitive advisory**, [RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387.html) in crypto-bigint 0.5.5 via opaque-ke/voprf -> elliptic-curve. Stable opaque-ke 4.0.1 requires that older dependency. Source review of the selected Ristretto255 OPRF and TripleDH implementations shows their scalars/points use curve25519-dalek, while shared hash expansion uses digest operations; the affected crypto-bigint integer arithmetic is not selected by SSync's fixed suite. No remote suite negotiation, P-curve instantiation or secret bigint arithmetic is exposed. This is a reviewed reachability assessment, not a formal proof or a patched transitive crate. No audit suppression is committed; a clean audit is not claimed. Follow upstream updates rather than vendoring or rewriting cryptography.
+
+Scope remains latest-copy per-file atomicity, independent full scans per destination and Linux x86_64. No Restic, restore endpoint, retained history, source snapshot consistency across destinations or at-rest encryption. The multi-candidate backup authentication wrapper has been tested but not independently audited.

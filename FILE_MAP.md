@@ -6,12 +6,17 @@
 - `docs/VALIDATION.md` — concrete test evidence, efficiency, platform scope and completed public release verification.
 - `IMPLEMENTATION_PLAN.md` — accepted requirements and historical implementation sequence; final contract is in docs/CONTRACT.md.
 - `PORT_REVIEW.md` — original source assessment and Java reference verification history.
-- `Cargo.toml` / `Cargo.lock` — Rust 4.0.0 package, minimum toolchain and pinned dependencies.
+- `Cargo.toml` / `Cargo.lock` — Rust package, minimum toolchain and pinned dependencies.
 - `src/main.rs` / `src/lib.rs` — executable dispatch and native library modules.
 - `src/cli.rs` — qualifiers, Java-compatible aliases, password inputs, guidance and local-only commands.
 - `src/auth.rs` — unbiased Base58 generation, OPAQUE/Argon2id, Noise confirmation and bounded framing.
 - `src/fs.rs` — Linux openat2 capabilities, directory/FS checks, no-follow single-link files, private partials and atomic replacement.
 - `src/transfer.rs` — fixed 200,000-byte pipeline, overlapped comparison/streaming, verified resume, layouts, filters and verified-state deletion.
+- `src/backup.rs` — private line configs/templates, password-selected upload-only bays, bounded independent multi-server backup cycles.
+- `install.sh` — checksum-verified latest Linux release bootstrap, then native installation.
+- `tests/podman/bootstrap.py` — installer checksum/download failure preservation in a disposable peer.
+- `tests/podman/compatibility.py` — ordinary 4.0/4.1 cross-version transfers in both connection directions.
+- `tests/podman/backup.py` — real backup fanout, defaults, isolation, failures, encryption, resume and malicious peer tests.
 - `src/runtime.rs` — listening/connecting independently of data direction, persistent operation, bounded admission/concurrency, cancellation and config workers.
 - `src/management.rs` — native local install/update/uninstall and ownership attached atomically to the executable.
 - `tests/parsers.rs` — 20,000 seeded parser mutations and path-contract boundary tests.

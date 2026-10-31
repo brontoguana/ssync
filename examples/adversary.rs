@@ -3,10 +3,22 @@ use anyhow::{Result, bail, ensure};
 use ssync::{auth::Channel, transfer::Message};
 use std::net::TcpStream;
 fn run() -> Result<()> {
-    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    let mut args = std::env::args().skip(1).collect::<Vec<_>>();
+    let backup = args.first().is_some_and(|a| a == "--backup");
+    if backup {
+        args.remove(0);
+    }
     ensure!(args.len() >= 2, "address mode [path]");
     let pass = std::env::var("SSYNC_PASSWORD")?;
-    let mut channel = Channel::authenticate(TcpStream::connect(&args[0])?, &pass, None, true)?;
+    let socket = TcpStream::connect(&args[0])?;
+    let mut channel = if backup {
+        Channel::authenticate_backup(socket, &pass, None)?.0
+    } else {
+        Channel::authenticate(socket, &pass, None, true)?
+    };
+    if backup {
+        ensure!(channel.recv::<bool>()?, "backup bay busy");
+    }
     let _: Message = channel.recv()?;
     channel.send(&Message::Begin {
         roots: vec![(

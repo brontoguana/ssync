@@ -20690,7 +20690,7 @@ DEALINGS IN THE SOFTWARE.
 
 
 ========================================================================
-rustls 0.23.45
+rustls 0.23.46
 SPDX: Apache-2.0 OR ISC OR MIT
 Repository: https://github.com/rustls/rustls
 
@@ -21182,7 +21182,7 @@ DEALINGS IN THE SOFTWARE.
 
 
 ========================================================================
-rustls-webpki 0.103.15
+rustls-webpki 0.103.16
 SPDX: ISC
 Repository: https://github.com/rustls/webpki
 
@@ -28144,7 +28144,7 @@ DEALINGS IN THE SOFTWARE.
 
 
 ========================================================================
-webpki-roots 1.0.9
+webpki-roots 1.0.11
 SPDX: CDLA-Permissive-2.0
 Repository: https://github.com/rustls/webpki-roots
 

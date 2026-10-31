@@ -1,8 +1,16 @@
 # SSync 4
 
+Install the latest release on **Linux x86_64, kernel 5.6+** (downloads and verifies the binary, then uses `sudo` to install):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/brontoguana/ssync/main/install.sh | bash
+```
+
+Already installed? Run `sudo ssync update`.
+
 Native, password-authenticated file synchronization with fixed 200,000-byte deltas. Rust executable; no Java, Python or shell runtime required. Files and directories only: no script hooks or remote execution.
 
-Version **4.0.0** replaces Java SSync 3.3. The command interface is retained; the new wire protocol requires version 4 on both endpoints. Initial supported release target is **Linux x86_64, kernel 5.6+**, with a static musl binary. Other platforms are not claimed tested or supported. Procfs and case-sensitive local Linux filesystems are required; casefold, network/FUSE and pseudo filesystems fail closed.
+Version **4.1.0** adds backup server/client modes to native SSync 4, which replaces Java SSync 3.3. The command interface is retained; the new wire protocol requires version 4 on both endpoints. Initial supported release target is **Linux x86_64, kernel 5.6+**, with a static musl binary. Other platforms are not claimed tested or supported. Procfs and case-sensitive local Linux filesystems are required; casefold, network/FUSE and pseudo filesystems fail closed.
 
 ## Usage
 
@@ -29,13 +37,52 @@ Passwords require 16+ Unicode characters; generated passwords use 24 uniformly s
 
 `.ssync` files contain quoted declarative transfer commands, one per line, and run concurrently. Only transfer operations are permitted; no shell expansion or execution. Configuration files cannot be group/other writable. Use `force` when unattended. `version`, `licenses`, `hash <directory>`, `deep <file>`, `scan <file>` and single-file inspection are local diagnostics. Hash output is BLAKE3 and intentionally differs from Java output.
 
+## Backup server and client
+
+```text
+ssync backup-server [port] [file]
+ssync backup-client [file]
+```
+
+Defaults: port **8425**, server file **`/opt/backup-server.ssync`**, client file **`/opt/backup-client.ssync`**. A server file can be supplied without a port: `ssync backup-server /etc/ssync/bays.ssync`. A missing file is created privately with commented examples; edit it and rerun. Parent directories and source/bay directories must already exist. Use `sudo` for the default `/opt` configuration if needed, or run as an unprivileged user with a private config and owned directories.
+
+Generate each source's password with `ssync pwd`. Put the same password on the client and each destination server. Keep config files mode `600`, outside source/bay directories. Replace the placeholders below with your own generated passwords.
+
+Server configuration, one bay per line:
+
+```text
+# password=absolute server-side directory
+<documents-password>=/srv/backups/documents
+<photos-password>=/srv/backups/photos
+```
+
+Client configuration:
+
+```text
+# Every destination receives every source, regardless of line order.
+@myserver
+@myotherserver:8125
+
+# password=absolute local source directory
+<documents-password>=/home/user/documents
+<photos-password>=/home/user/photos
+```
+
+Each password selects its bay on each server. The client cannot choose a server path. **The source directory's contents are mirrored directly into the bay, including deletion of extra files.** There is no native history; accidental source deletion can propagate. `ssync nodelete backup-client` retains extras. `ssync dryrun backup-client` previews without writing files or staging state; `skip:substring`, `verify` and `verbose` also work before the action. These are latest-copy backups, with atomic replacement per file rather than for a whole tree.
+
+The server stays running; the client performs one cycle and exits without prompting. Up to four uploads run concurrently, with independent success/failure reporting. Any failed source/server pair gives a nonzero exit status after the other pairs finish. Run it from your scheduler for recurring backups. Same-bay simultaneous uploads report busy; retry later. Different bays can update concurrently. Config changes require a restart/rerun. Environment passwords do not override credentials in backup files.
+
+Both endpoints need **4.1+ for backup mode**. Ordinary transfer commands retain the 4.0 protocol. Backup mode accepts uploads only: no network restoration, remote execution, Restic integration or at-rest encryption. Retrieve files with normal administrator server access. Blank/comment lines are ignored, `=` splits at its first occurrence, and IPv6 servers use `@[address][:port]`. Configuration limits are 32 servers and 32 sources/bays. Passwords must be unique within each file; server bay directories must not overlap.
+
+Fixed 200,000-byte comparisons, bounded pipelining, verified resume and final content verification are reused. Each destination currently scans/hashes independently, reading unchanged contents for integrity; persistent indexing and sharing scans between destinations are future optimizations. See [backup command contract](docs/CONTRACT.md#backup-commands-41).
+
 ## Installation and updates
 
-Download the platform binary and `checksums.txt` from [SSync 4.0.0](https://github.com/brontoguana/ssync/releases/tag/v4.0.0). Check its SHA-256 before executing it. The public download, native install, up-to-date check and uninstall have been tested in the isolated Podman lab.
+Download the platform binary and `checksums.txt` from [SSync 4.1.0](https://github.com/brontoguana/ssync/releases/tag/v4.1.0). Check its SHA-256 before executing it. The public download, native install, up-to-date check and uninstall have been tested in the isolated Podman lab.
 
 ```bash
-curl -fLO https://github.com/brontoguana/ssync/releases/download/v4.0.0/ssync_linux_amd64
-curl -fLO https://github.com/brontoguana/ssync/releases/download/v4.0.0/checksums.txt
+curl -fLO https://github.com/brontoguana/ssync/releases/download/v4.1.0/ssync_linux_amd64
+curl -fLO https://github.com/brontoguana/ssync/releases/download/v4.1.0/checksums.txt
 sha256sum --ignore-missing --check checksums.txt
 chmod +x ./ssync_linux_amd64
 sudo ./ssync_linux_amd64 install
@@ -45,7 +92,7 @@ sudo ssync uninstall
 
 Install/update use native filesystem/network APIs and atomic replacement. Linux ownership metadata is attached to the staged executable, so the binary and ownership commit together. Updates consult this project's GitHub releases, print current/available versions and release notes, verify the exact platform asset's SHA-256, and preserve the installed executable on failed downloads/checks. An unowned or modified executable is never overwritten/removed. Uninstall removes owned installation files and preserves transfer data. Default path: `/usr/local/bin/ssync`; `SSYNC_INSTALL_DIR` supports private/disposable installations. Management is local-only, never accepted over the protocol or in `.ssync` lists.
 
-SHA-256 from the same GitHub release verifies artifact integrity, not independent publisher authenticity. GitHub account/release compromise remains a trust risk. No scripts from mutable branches are downloaded/executed. See [security/channel design](docs/PROTOCOL.md) and [command/migration contract](docs/CONTRACT.md).
+SHA-256 from the same GitHub release verifies artifact integrity, not independent publisher authenticity. GitHub account/release compromise remains a trust risk. The optional bootstrap above runs a shell script from this repository; installed SSync performs updates through native APIs without scripts. See [security/channel design](docs/PROTOCOL.md) and [command/migration contract](docs/CONTRACT.md).
 
 ## Development and verification
 

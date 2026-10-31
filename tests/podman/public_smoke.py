@@ -8,7 +8,7 @@ import application as app
 from application import lab
 
 NETWORK='ssync-public-smoke-net'
-parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--tag',required=True);args=parser.parse_args()
+parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--tag',required=True);parser.add_argument('--bootstrap',action='store_true');args=parser.parse_args()
 status=lab.status();peer=lab.PEERS[1]
 if lab.owned('container',peer)['Config']['Labels'].get('io.ssync.test-profile')!='large':raise SystemExit('Use bounded large profile for disposable /usr/local/bin tmpfs.')
 if lab.exists('network',NETWORK):raise SystemExit('Public smoke network already exists; inspect before removing.')
@@ -39,7 +39,14 @@ print(json.dumps({'tag':release['tag_name'],'sha256':hashlib.sha256(binary).hexd
     updated=lab.podman('exec','--user','0',peer,'/usr/local/bin/ssync','update',timeout=90)
     assert 'Current:' in updated and 'available:' in updated and 'up to date' in updated
     removed=lab.podman('exec','--user','0',peer,'/usr/local/bin/ssync','uninstall')
-    result={'artifact':artifact,'install':installed,'update':updated,'uninstall':removed,'rootless':True,'host_mounts':[]}
+    bootstrap=None
+    if args.bootstrap:
+        # Same command as README, run only inside the disposable container.
+        bootstrap=lab.podman('exec','--user','0','--env','TMPDIR=/app',peer,'bash','-o','pipefail','-c',
+            'curl -fsSL https://raw.githubusercontent.com/brontoguana/ssync/main/install.sh | bash',timeout=150)
+        assert lab.podman('exec',peer,'/usr/local/bin/ssync','version')==expected
+        lab.podman('exec','--user','0',peer,'/usr/local/bin/ssync','uninstall')
+    result={'artifact':artifact,'install':installed,'update':updated,'uninstall':removed,'bootstrap':bootstrap,'rootless':True,'host_mounts':[]}
     out=app.ROOT/'target/public-smoke.json';out.write_text(json.dumps(result,indent=2)+'\n');print(json.dumps(result,indent=2))
 finally:
     if connected:lab.podman('network','disconnect',NETWORK,peer)

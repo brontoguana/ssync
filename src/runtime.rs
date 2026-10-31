@@ -37,12 +37,13 @@ impl Control {
             }
         }
     }
-    fn track(self: &Arc<Self>, socket: &TcpStream) -> Result<SocketGuard> {
+    pub(crate) fn track(self: &Arc<Self>, socket: &TcpStream) -> Result<SocketGuard> {
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
         let mut sockets = self
             .sockets
             .lock()
             .map_err(|_| anyhow::anyhow!("socket registry unavailable"))?;
+        ensure!(!self.stop.load(Ordering::Relaxed), "cancelled");
         ensure!(sockets.len() < 128, "process connection limit");
         sockets.insert(id, socket.try_clone()?);
         Ok(SocketGuard {
@@ -51,7 +52,7 @@ impl Control {
         })
     }
 }
-struct SocketGuard {
+pub(crate) struct SocketGuard {
     control: Arc<Control>,
     id: u64,
 }
@@ -186,32 +187,7 @@ pub fn transfer_command(t: Transfer, control: Arc<Control>) -> Result<()> {
         }
     }
     let credential = Arc::new(Credential::new(&t.password)?);
-    // Explicit dual-stack configuration is independent of the host's v6only default.
-    let ipv6 = (|| -> std::io::Result<TcpListener> {
-        let socket = socket2::Socket::new(
-            socket2::Domain::IPV6,
-            socket2::Type::STREAM,
-            Some(socket2::Protocol::TCP),
-        )?;
-        socket.set_only_v6(false)?;
-        socket.set_reuse_address(true)?;
-        let address = std::net::SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, t.port));
-        socket.bind(&address.into())?;
-        socket.listen(128)?;
-        Ok(socket.into())
-    })();
-    let listener = match ipv6 {
-        Ok(s) => s,
-        Err(e)
-            if matches!(
-                e.raw_os_error(),
-                Some(libc::EAFNOSUPPORT | libc::EPROTONOSUPPORT | libc::EADDRNOTAVAIL)
-            ) =>
-        {
-            TcpListener::bind(("0.0.0.0", t.port))?
-        }
-        Err(e) => return Err(e.into()),
-    };
+    let listener = listen(t.port)?;
     listener.set_nonblocking(true)?;
     println!(
         "{} now accepting {}connections on port {}",
@@ -297,6 +273,35 @@ pub fn transfer_command(t: Transfer, control: Arc<Control>) -> Result<()> {
         let _ = worker.join();
     }
     bail!("cancelled")
+}
+pub(crate) fn listen(port: u16) -> Result<TcpListener> {
+    // Explicit dual-stack configuration is independent of the host's v6only default.
+    let ipv6 = (|| -> std::io::Result<TcpListener> {
+        let socket = socket2::Socket::new(
+            socket2::Domain::IPV6,
+            socket2::Type::STREAM,
+            Some(socket2::Protocol::TCP),
+        )?;
+        socket.set_only_v6(false)?;
+        socket.set_reuse_address(true)?;
+        let address = std::net::SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, port));
+        socket.bind(&address.into())?;
+        socket.listen(128)?;
+        Ok(socket.into())
+    })();
+    let listener = match ipv6 {
+        Ok(s) => s,
+        Err(e)
+            if matches!(
+                e.raw_os_error(),
+                Some(libc::EAFNOSUPPORT | libc::EPROTONOSUPPORT | libc::EADDRNOTAVAIL)
+            ) =>
+        {
+            TcpListener::bind(("0.0.0.0", port))?
+        }
+        Err(e) => return Err(e.into()),
+    };
+    Ok(listener)
 }
 pub fn diagnostic(action: &str, path: &Path) -> Result<()> {
     if action == "hash" {

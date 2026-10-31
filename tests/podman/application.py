@@ -184,7 +184,7 @@ def main():
     args=parser.parse_args();status=setup(args.binary)
     a,b=lab.PEERS
     for peer in (a,b):
-        version=command(peer,['version']);assert version['out']=='SSync v4.0.0\n' and version['code']==0, version
+        version=command(peer,['version']);assert version['out']=='SSync v'+__import__('tomllib').loads((ROOT/'Cargo.toml').read_text())['package']['version']+'\n' and version['code']==0, version
         pwd=command(peer,['pwd']);groups=pwd['out'].rstrip('\n').split('-');assert pwd['code']==0 and len(groups)==6 and all(len(g)==4 for g in groups) and pwd['err']=='',pwd
         short=command(peer,['force','put','40300','/nonexistent'],password='short');assert short['code']!=0 and '16 characters' in short['err'],short
     record('CLI generator/version/password minimum',binary_sha256=hashlib.sha256(args.binary.read_bytes()).hexdigest(),runtime='static Linux x86_64 musl')

@@ -23,6 +23,9 @@ fn bounded_mutated_protocol_and_cli_inputs() {
             &["force".into(), "put".into(), text.clone(), ".".into()],
             Some("abcdefghijklmnop"),
         );
+        for action in ["backup-server", "backup-client"] {
+            let _ = cli::parse(&[action.into(), text.clone()], None);
+        }
         let _ = fs::valid(&text);
         let _ = shell_words::split(&text);
     }

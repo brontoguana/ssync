@@ -37,7 +37,12 @@ try:
             # OPAQUE KE1 KE2 KE3, Noise handshake 1/2, ready connector/listener.
             for i in range(7):
                 src,dst=(c,s) if i in (0,2,3,5) else (s,c)
-                value=frame(src);captures.append(value.hex())
+                if i==1 and hello_c[:8]==b'SSYNCB\x00\x01':
+                    count=frame(src)
+                    if len(count)!=5 or not 1<=count[4]<=32:raise ValueError('bay count')
+                    value=count+b''.join(frame(src) for _ in range(count[4]))
+                else:value=frame(src)
+                captures.append(value.hex())
                 if a.mode=='missing-final' and i==5:raise EOFError()
                 if a.mode=='replay' and i==2:
                     saved=json.loads(pathlib.Path('/work/app-tests/captured-handshake.json').read_text());value=bytes.fromhex(saved[i])

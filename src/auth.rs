@@ -153,13 +153,47 @@ pub struct Channel {
 }
 impl Channel {
     pub fn authenticate(
-        mut socket: TcpStream,
+        socket: TcpStream,
         password: &str,
         credential: Option<&Credential>,
         sending: bool,
     ) -> Result<Self> {
-        validate_password(password)?;
-        let end = Instant::now() + AUTH_TIMEOUT;
+        Ok(Self::authenticate_inner(
+            socket,
+            password,
+            credential.map(std::slice::from_ref),
+            sending,
+            false,
+        )?
+        .0)
+    }
+    /// Backup-only, upload-only channel. Returns the authenticated bay index.
+    pub fn authenticate_backup(
+        socket: TcpStream,
+        password: &str,
+        credentials: Option<&[Credential]>,
+    ) -> Result<(Self, usize)> {
+        Self::authenticate_inner(socket, password, credentials, credentials.is_none(), true)
+    }
+    fn authenticate_inner(
+        mut socket: TcpStream,
+        password: &str,
+        credentials: Option<&[Credential]>,
+        sending: bool,
+        backup: bool,
+    ) -> Result<(Self, usize)> {
+        if credentials.is_none() || !backup {
+            validate_password(password)?;
+        }
+        if let Some(c) = credentials {
+            ensure!(!c.is_empty() && c.len() <= 32, "credential limit");
+        }
+        let end = Instant::now()
+            + if backup {
+                Duration::from_secs(60)
+            } else {
+                AUTH_TIMEOUT
+            };
         let _permit = AuthPermit::acquire()?;
         // A wall-clock watchdog prevents slow trickle reads extending read_exact indefinitely.
         let deadline_socket = socket.try_clone()?;
@@ -196,20 +230,21 @@ impl Channel {
         let watchdog_guard = DeadlineGuard(done, Some(watchdog));
         socket.set_nodelay(true)?;
         deadline(&socket, end)?;
-        let mut hello = MAGIC.to_vec();
+        let magic = if backup { b"SSYNCB\0\x01" } else { MAGIC };
+        let mut hello = magic.to_vec();
         hello.push(u8::from(sending));
         socket.write_all(&hello)?;
         let mut peer = [0; 9];
         socket.read_exact(&mut peer)?;
         ensure!(
-            &peer[..8] == MAGIC,
+            &peer[..8] == magic,
             "incompatible SSync protocol; both peers require SSync 4"
         );
         ensure!(
             peer[8] <= 1 && peer[8] != u8::from(sending),
             "transfer direction mismatch"
         );
-        let initiator = credential.is_none();
+        let initiator = credentials.is_none();
         let connector_role = if initiator {
             u8::from(sending)
         } else {
@@ -218,50 +253,95 @@ impl Channel {
         let mut context = CONTEXT.to_vec();
         context.push(connector_role);
         deadline(&socket, end)?;
-        let session = if let Some(c) = credential {
+        if backup {
+            context.extend_from_slice(b"/backup-upload-v1");
+        }
+        let (session, selected) = if let Some(credentials) = credentials {
             let request = recv_raw(&mut socket, HANDSHAKE_LIMIT)?;
-            let start = ServerLogin::start(
-                &mut OsRng,
-                &c.setup,
-                Some(c.record.clone()),
-                CredentialRequest::deserialize(&request)?,
-                CONTEXT,
-                ServerLoginParameters {
-                    context: Some(&context),
-                    ..Default::default()
-                },
-            )?;
-            deadline(&socket, end)?;
-            send_raw(&mut socket, &start.message.serialize())?;
+            let request = CredentialRequest::deserialize(&request)?;
+            let mut states = Vec::new();
+            if backup {
+                send_raw(&mut socket, &[credentials.len() as u8])?;
+            }
+            for c in credentials {
+                let start = ServerLogin::start(
+                    &mut OsRng,
+                    &c.setup,
+                    Some(c.record.clone()),
+                    request.clone(),
+                    CONTEXT,
+                    ServerLoginParameters {
+                        context: Some(&context),
+                        ..Default::default()
+                    },
+                )?;
+                deadline(&socket, end)?;
+                send_raw(&mut socket, &start.message.serialize())?;
+                states.push(start.state);
+            }
             let finalization = recv_raw(&mut socket, HANDSHAKE_LIMIT)?;
-            start
-                .state
+            let (selected, finalization) = if backup {
+                ensure!(finalization.len() > 1, "missing bay confirmation");
+                (finalization[0] as usize, &finalization[1..])
+            } else {
+                (0, finalization.as_slice())
+            };
+            ensure!(selected < states.len(), "invalid bay confirmation");
+            let state = states.swap_remove(selected);
+            let session = state
                 .finish(
-                    CredentialFinalization::deserialize(&finalization)?,
+                    CredentialFinalization::deserialize(finalization)?,
                     ServerLoginParameters {
                         context: Some(&context),
                         ..Default::default()
                     },
                 )?
-                .session_key
+                .session_key;
+            (session, selected)
         } else {
             let start = ClientLogin::<Suite>::start(&mut OsRng, password.as_bytes())?;
             send_raw(&mut socket, &start.message.serialize())?;
-            let response = recv_raw(&mut socket, HANDSHAKE_LIMIT)?;
-            let finish = start.state.finish(
-                &mut OsRng,
-                password.as_bytes(),
-                CredentialResponse::deserialize(&response)?,
-                ClientLoginFinishParameters {
-                    context: Some(&context),
-                    ksf: Some(&ksf()),
-                    ..Default::default()
-                },
-            )?;
+            let count = if backup {
+                let count = recv_raw(&mut socket, 1)?;
+                ensure!((1..=32).contains(&count[0]), "bay count limit");
+                count[0] as usize
+            } else {
+                1
+            };
+            let mut matched = None;
+            for index in 0..count {
+                let response = recv_raw(&mut socket, HANDSHAKE_LIMIT)?;
+                if matched.is_none() {
+                    deadline(&socket, end)?;
+                    if let Ok(finish) = start.state.clone().finish(
+                        &mut OsRng,
+                        password.as_bytes(),
+                        CredentialResponse::deserialize(&response)?,
+                        ClientLoginFinishParameters {
+                            context: Some(&context),
+                            ksf: Some(&ksf()),
+                            ..Default::default()
+                        },
+                    ) {
+                        matched = Some((finish, index));
+                    }
+                }
+            }
+            let (finish, index) =
+                matched.ok_or_else(|| anyhow::anyhow!("authentication failed"))?;
             deadline(&socket, end)?;
-            send_raw(&mut socket, &finish.message.serialize())?;
-            finish.session_key
+            let mut finalization = Vec::new();
+            if backup {
+                finalization.push(index as u8);
+            }
+            finalization.extend_from_slice(&finish.message.serialize());
+            send_raw(&mut socket, &finalization)?;
+            (finish.session_key, index)
         };
+        if backup {
+            // Bind bay selection and upload protocol into the final authenticated channel.
+            context.push(selected as u8);
+        }
         let session = Zeroizing::new(session);
         let mut psk = Zeroizing::new([0u8; 32]);
         hkdf::Hkdf::<sha2::Sha256>::new(Some(&context), &session[..])
@@ -317,7 +397,7 @@ impl Channel {
         channel
             .socket
             .set_write_timeout(Some(Duration::from_secs(120)))?;
-        Ok(channel)
+        Ok((channel, selected))
     }
     pub fn send<T: Serialize>(&mut self, value: &T) -> Result<()> {
         self.send_bytes(&serde_json::to_vec(value)?)

@@ -43,6 +43,7 @@ pub enum Command {
     Management(String),
     Config(PathBuf),
     Licenses,
+    Backup(crate::backup::Command),
 }
 pub fn alias_port(alias: &str) -> Result<u16> {
     ensure!(
@@ -127,6 +128,12 @@ pub fn parse(args: &[String], env: Option<&str>) -> Result<Command> {
     }
     if args.len() == 1 {
         match args[0].to_lowercase().as_str() {
+            "backup-server" | "backup-client" => {
+                return Ok(Command::Backup(crate::backup::parse_command(
+                    args,
+                    Options::default(),
+                )?));
+            }
             "pwd" => return Ok(Command::Pwd),
             "licenses" | "--licenses" => return Ok(Command::Licenses),
             "version" | "--version" => return Ok(Command::Version),
@@ -174,6 +181,17 @@ pub fn parse(args: &[String], env: Option<&str>) -> Result<Command> {
             _ => break,
         }
         i += 1;
+    }
+    if i < args.len()
+        && matches!(
+            args[i].to_lowercase().as_str(),
+            "backup-server" | "backup-client"
+        )
+    {
+        return Ok(Command::Backup(crate::backup::parse_command(
+            &args[i..],
+            o,
+        )?));
     }
     if args.len() == i + 2 && matches!(args[i].to_lowercase().as_str(), "hash" | "deep" | "scan") {
         return Ok(Command::Diagnostic(
@@ -244,7 +262,7 @@ pub fn parse(args: &[String], env: Option<&str>) -> Result<Command> {
 pub const HELP: &str = concat!(
     "SSync v",
     env!("CARGO_PKG_VERSION"),
-    " — native file-only synchronization\n\nssync [merge nodelete dryrun verify verbose force skip:substring] <put|get|offer|accept> <location> [paths...]\n\nput/offer send; get/accept receive. put/get once; offer/accept continuously.\nlocation: port, alias, host:port, host:alias, [IPv6]:port; optional password@ prefix.\nPassword precedence: SSYNC_PASSWORD > SSYNC_PASSWORD_FILE > SSYNC_PASSWORD_FD > inline > prompt/generated listener. Minimum 16 characters.\nReceiver directory must exist. Default layout includes source basenames; receiver merge strips one directory name.\nDefault mirror deletion is confined to selected source directories; use nodelete to retain extras.\n\nssync pwd | version | licenses | ? | hash <dir> | deep <file> | scan <file> | <file.ssync>\nsudo ssync install | update | uninstall\nNo script execution. Both peers require version 4. Linux kernel 5.6+ required.\n"
+    " — native file-only synchronization\n\nssync [merge nodelete dryrun verify verbose force skip:substring] <put|get|offer|accept> <location> [paths...]\n\nput/offer send; get/accept receive. put/get once; offer/accept continuously.\nlocation: port, alias, host:port, host:alias, [IPv6]:port; optional password@ prefix.\nPassword precedence: SSYNC_PASSWORD > SSYNC_PASSWORD_FILE > SSYNC_PASSWORD_FD > inline > prompt/generated listener. Minimum 16 characters.\nReceiver directory must exist. Default layout includes source basenames; receiver merge strips one directory name.\nDefault mirror deletion is confined to selected source directories; use nodelete to retain extras.\n\nssync [verbose] backup-server [port] [file] (default 8425, /opt/backup-server.ssync)\nssync [nodelete dryrun verify verbose skip:substring] backup-client [file] (default /opt/backup-client.ssync)\n\nssync pwd | version | licenses | ? | hash <dir> | deep <file> | scan <file> | <file.ssync>\nsudo ssync install | update | uninstall\nNo script execution. Both peers require version 4. Linux kernel 5.6+ required.\n"
 );
 pub fn guide() -> Result<Vec<String>> {
     fn ask(label: &str) -> Result<String> {
