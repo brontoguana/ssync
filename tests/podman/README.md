@@ -86,3 +86,18 @@ For 4.1 delivery, `python3 tests/podman/public_smoke.py --tag v4.1.0 --bootstrap
 ## Security review regressions
 
 `review.py` requires the large profile and runs after application setup, using only the existing two peers. It starts bounded metadata-only root-run preflights and a second unprivileged UID inside peer B to check bay/ancestor trust, confirms read-only other-user source support, checks continuous resolver-error retries/cancellation, and reproduces the documented authenticated comparison oracle with dry runs. No capabilities or host mounts are added. It requires the main binary and adversarial example; do not run concurrently with other suites. Filesystem durability probes and exact strace EIO commands are in `../../docs/SECURITY_REVIEW.md`.
+
+
+## Release binary identity and crypto checks (4.1.1)
+
+Build the adversarial helper first, then build the application **separately and last** with the same `--bin ssync` invocation as `scripts/build-release.py` (apply the documented musl compiler/linker environment to both commands):
+
+```bash
+cargo build --locked --release --target x86_64-unknown-linux-musl --example adversary
+cargo build --locked --release --target x86_64-unknown-linux-musl --bin ssync
+python3 tests/podman/crypto.py
+```
+
+Do not combine the binary and example targets for release validation: Cargo's development-dependency feature unification changes the ctrlc/nix/bitflags build graph and executable identity. Record the tested production binary hash and package with `python3 scripts/build-release.py --expected-sha256 <tested-production-binary-sha256>` from committed source; this rejects a mismatch before changing release assets. Verify the archive binary hash too. Building only the helper later can also change the cached dependency graph; finish with the production-only build before testing. No adversarial helper is distributed as a release executable.
+
+The crypto runner tests each OPAQUE/Noise/ready stage and backup candidate manipulation. Run it separately from the ordinary matrix because setup resets only labelled synthetic data. Include `compatibility.py --previous <verified-4.0-binary> --backup-previous <verified-4.1.0-binary>` for ordinary and backup compatibility. Public 4.1.1 smoke uses `public_smoke.py --tag v4.1.1 --bootstrap --previous <verified-4.1.0-binary>`.

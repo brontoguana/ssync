@@ -5,6 +5,7 @@
 - Audit OPAQUE/Argon2id/HKDF/Noise integration and backup candidate selection; document findings, tests and limits in docs/CRYPTO_REVIEW.md.
 - Wipe application-owned OPAQUE export/session results promptly, including failed confirmation paths.
 - Close and permanently reject channel reuse after encrypted framing, authentication, decoding or I/O failure.
+- Document separate helper/production builds and add a tested-binary hash gate before release packaging.
 - Include the previously unreleased filesystem, durability, config-read, resolver and authentication-admission hardening described in docs/SECURITY_REVIEW.md.
 
 - Validate 193 final-candidate Podman checks, 26 native/parser tests, 84 upstream OPAQUE tests and two explicit sync-failure probes; retain the documented unsuppressed dependency advisory.

@@ -12,7 +12,10 @@ import tomllib
 root=Path(__file__).resolve().parents[1]
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--allow-dirty',action='store_true',help='development packaging only; never use for publication')
+parser.add_argument('--expected-sha256',help='require the production binary SHA-256 recorded by completed tests before packaging')
 args=parser.parse_args()
+if args.expected_sha256 is not None and (len(args.expected_sha256)!=64 or any(c not in '0123456789abcdef' for c in args.expected_sha256)):
+    parser.error('--expected-sha256 must be 64 lowercase hexadecimal characters')
 status=subprocess.check_output(['git','status','--porcelain','--untracked-files=normal'],cwd=root,text=True)
 if status and not args.allow_dirty:raise SystemExit('Commit reviewed source before building publishable release assets.')
 version=tomllib.loads((root/'Cargo.toml').read_text())['package']['version']
@@ -24,6 +27,9 @@ assert header[:6]==b'\x7fELF\x02\x01' and int.from_bytes(header[18:20],'little')
 # Verify readelf reports no dynamic interpreter: no glibc/language runtime installation.
 elf=subprocess.check_output(['readelf','-l',str(binary)],text=True)
 if 'INTERP' in elf:raise SystemExit('Release binary must be statically linked.')
+if args.expected_sha256 is not None:
+    actual=hashlib.file_digest(binary.open('rb'),'sha256').hexdigest()
+    if actual!=args.expected_sha256:raise SystemExit(f'Tested binary mismatch: expected {args.expected_sha256}, built {actual}; release assets were not changed.')
 dist=root/'dist';dist.mkdir(exist_ok=True)
 raw=dist/'ssync_linux_amd64';shutil.copyfile(binary,raw);raw.chmod(0o755)
 archive=dist/f'ssync_{version}_linux_amd64.tar.gz'
