@@ -2,6 +2,8 @@
 
 ## 4.1.1 — 2026-11-01
 
+- Publish the exact tested production artifact; verify all six public assets, the README installer, actual 4.1.0-to-4.1.1 update, already-current reporting and uninstall in the rootless lab.
+
 - Audit OPAQUE/Argon2id/HKDF/Noise integration and backup candidate selection; document findings, tests and limits in docs/CRYPTO_REVIEW.md.
 - Wipe application-owned OPAQUE export/session results promptly, including failed confirmation paths.
 - Close and permanently reject channel reuse after encrypted framing, authentication, decoding or I/O failure.
