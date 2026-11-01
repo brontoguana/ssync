@@ -2,7 +2,7 @@
 
 Scope: the native application at `cf76fb0`, including all nine Rust modules, bootstrap, release/notices scripts, the adversarial example, test runners, dependency lock and protocol/contract documentation. The ignored Java imports are historical references, not compiled or distributed application code. This is an implementation review and targeted testing, not an independent cryptographic audit or proof that no vulnerabilities exist.
 
-Status: fixes in this review are **unreleased**. The published 4.1.0 download does not contain them.
+Status: fixes in this review are included in **4.1.1**, alongside the [cryptographic integration review](CRYPTO_REVIEW.md). The older 4.1.0 download does not contain them.
 
 ## Findings and fixes
 
@@ -69,8 +69,8 @@ Completed review validation:
 
 Additionally, 16 native unit tests and two parser/path tests pass (including 20,000 deterministic mutations), plus both explicitly injected fsync-EIO probes. Formatting, warnings-denied Clippy, Rust 1.88 all-target checks, shellcheck and Python compilation pass. Cargo audit still reports the single advisory discussed above, without suppression.
 
-The final development binary is static Linux x86_64 musl, 5,505,952 bytes, SHA-256 `9883b5429a8447911349e89f15185d059843c6c6a07e0a25c4a972beeffee63e`. Its package version still prints 4.1.0 because these changes are unreleased; it is **not** the published 4.1.0 artifact. The final binary passed 53 actual application/targeted-review/backup checks after the last mount/config/source-root refinements. Other integration groups passed on preceding review builds; no claim is made that a new public release artifact completed the full release matrix. The selected-source mount test transfers only its root-owned synthetic fixture and filters copied-up image tools/symlinks.
+At the original review completion, the development binary was static Linux x86_64 musl, 5,505,952 bytes, SHA-256 `9883b5429a8447911349e89f15185d059843c6c6a07e0a25c4a972beeffee63e`. Its package version still printed 4.1.0 because these changes were then unreleased; it was **not** the published 4.1.0 artifact. That review binary passed 53 actual application/targeted-review/backup checks after the last mount/config/source-root refinements. Other integration groups passed on preceding review builds; no claim is made that a new public release artifact completed the full release matrix. The selected-source mount test transfers only its root-owned synthetic fixture and filters copied-up image tools/symlinks.
 
 The large-file run transfers 2,400,000,017 bytes, skips identical contents with zero content bytes, and sends exactly 200,000 bytes for an edit beyond the 2 GiB offset. The rate-limited encrypted transfer completes in 121.93 seconds. Management tests use a private synthetic 4.1.1 fixture for a real version increase, never a public release. All container tests use the existing two labelled rootless peers; no host data mounts or new capabilities were introduced. The bootstrap test's bounded executable tmpfs exhaustion and source-mount fixture's copied-up symlinks were harness failures, corrected and rerun; they were not counted as passes.
 
-Source fixes and this report are committed/pushed separately from the unchanged public 4.1.0 release. No production host was installed or upgraded during review. Raw commands, output and hashes stay in ignored `DEBUGLOG.md` and `target/security-review-*`; new repeatable regressions are `tests/podman/review.py` and `tests/fs_durability.rs`.
+Source fixes and this report were initially committed/pushed separately from public 4.1.0; they are now included in 4.1.1. No production host was installed or upgraded during review. Raw commands, output and hashes stay in ignored `DEBUGLOG.md` and `target/security-review-*`; new repeatable regressions are `tests/podman/review.py` and `tests/fs_durability.rs`.

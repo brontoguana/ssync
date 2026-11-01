@@ -43,6 +43,29 @@ try:
                     value=count+b''.join(frame(src) for _ in range(count[4]))
                 else:value=frame(src)
                 captures.append(value.hex())
+                # Audit modes perturb one precise handshake stage, preserving other traffic.
+                if a.mode.startswith('stage-'):
+                    _,stage,operation=a.mode.split('-')
+                    if i==int(stage):
+                        if operation=='drop':raise EOFError()
+                        if operation in ('flip','unused'):
+                            offset=len(value)-1
+                            if i==1 and hello_c[:8]==b'SSYNCB\x00\x01' and operation=='flip':
+                                offset=5+4+int.from_bytes(value[5:9],'big')-1
+                            value=value[:offset]+bytes([value[offset]^1])+value[offset+1:]
+                        elif operation=='zero':
+                            if i==1 and hello_c[:8]==b'SSYNCB\x00\x01':
+                                n=int.from_bytes(value[5:9],'big')
+                                value=value[:9]+bytes(n)+value[9+n:]
+                            else:value=value[:4]+bytes(len(value)-4)
+                        elif operation=='oversize':value=(2049).to_bytes(4,'big')
+                        elif operation=='index':value=value[:4]+bytes([31])+value[5:]
+                        elif operation=='swap':
+                            # Swap two intact bay KE2s. The selected index must not remap credentials.
+                            n=int.from_bytes(value[5:9],'big')+4
+                            value=value[:5]+value[5+n:]+value[5:5+n]
+                        elif operation=='count0':value=bytes([0,0,0,1,0])
+                        elif operation=='count33':value=bytes([0,0,0,1,33])
                 if a.mode=='missing-final' and i==5:raise EOFError()
                 if a.mode=='replay' and i==2:
                     saved=json.loads(pathlib.Path('/work/app-tests/captured-handshake.json').read_text());value=bytes.fromhex(saved[i])

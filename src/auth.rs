@@ -17,7 +17,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 pub const ALPHABET: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 const MAGIC: &[u8; 8] = b"SSYNC4\0\x01";
@@ -106,7 +106,7 @@ impl Credential {
         let setup = ServerSetup::<Suite>::new(&mut OsRng);
         let start = ClientRegistration::<Suite>::start(&mut OsRng, password.as_bytes())?;
         let response = ServerRegistration::start(&setup, start.message, CONTEXT)?;
-        let finish = start.state.finish(
+        let mut finish = start.state.finish(
             &mut OsRng,
             password.as_bytes(),
             response.message,
@@ -115,6 +115,8 @@ impl Credential {
                 ..Default::default()
             },
         )?;
+        // The library result does not wipe this unused output on drop.
+        finish.export_key.zeroize();
         Ok(Self {
             setup,
             record: ServerRegistration::finish(finish.message),
@@ -148,6 +150,7 @@ fn deadline(s: &TcpStream, end: Instant) -> Result<()> {
 pub struct Channel {
     socket: TcpStream,
     noise: snow::TransportState,
+    failed: bool,
     pub wire_sent: u64,
     pub wire_received: u64,
 }
@@ -288,15 +291,15 @@ impl Channel {
             };
             ensure!(selected < states.len(), "invalid bay confirmation");
             let state = states.swap_remove(selected);
-            let session = state
-                .finish(
-                    CredentialFinalization::deserialize(finalization)?,
-                    ServerLoginParameters {
-                        context: Some(&context),
-                        ..Default::default()
-                    },
-                )?
-                .session_key;
+            let mut finish = state.finish(
+                CredentialFinalization::deserialize(finalization)?,
+                ServerLoginParameters {
+                    context: Some(&context),
+                    ..Default::default()
+                },
+            )?;
+            let session = Zeroizing::new(finish.session_key);
+            finish.session_key.zeroize();
             (session, selected)
         } else {
             let start = ClientLogin::<Suite>::start(&mut OsRng, password.as_bytes())?;
@@ -313,7 +316,7 @@ impl Channel {
                 let response = recv_raw(&mut socket, HANDSHAKE_LIMIT)?;
                 if matched.is_none() {
                     deadline(&socket, end)?;
-                    if let Ok(finish) = start.state.clone().finish(
+                    if let Ok(mut finish) = start.state.clone().finish(
                         &mut OsRng,
                         password.as_bytes(),
                         CredentialResponse::deserialize(&response)?,
@@ -323,30 +326,30 @@ impl Channel {
                             ..Default::default()
                         },
                     ) {
-                        matched = Some((finish, index));
+                        // Protect outputs before any later candidate read or KE3 write fails.
+                        finish.export_key.zeroize();
+                        let session = Zeroizing::new(finish.session_key);
+                        finish.session_key.zeroize();
+                        matched = Some((finish.message, session, index));
                     }
                 }
             }
-            let (finish, index) =
+            let (message, session, index) =
                 matched.ok_or_else(|| anyhow::anyhow!("authentication failed"))?;
             deadline(&socket, end)?;
             let mut finalization = Vec::new();
             if backup {
                 finalization.push(index as u8);
             }
-            finalization.extend_from_slice(&finish.message.serialize());
+            finalization.extend_from_slice(&message.serialize());
             send_raw(&mut socket, &finalization)?;
-            (finish.session_key, index)
+            (session, index)
         };
         if backup {
             // Bind bay selection and upload protocol into the final authenticated channel.
             context.push(selected as u8);
         }
-        let session = Zeroizing::new(session);
-        let mut psk = Zeroizing::new([0u8; 32]);
-        hkdf::Hkdf::<sha2::Sha256>::new(Some(&context), &session[..])
-            .expand(b"SSync-4 Noise PAKE session PSK", psk.as_mut())
-            .map_err(|_| anyhow::anyhow!("key derivation failed"))?;
+        let psk = derive_psk(&session, &context)?;
         let builder = snow::Builder::new("Noise_NNpsk0_25519_ChaChaPoly_SHA256".parse()?)
             .psk(0, &psk)?
             .prologue(&context)?;
@@ -373,6 +376,7 @@ impl Channel {
         let mut channel = Self {
             socket,
             noise: handshake.into_transport_mode()?,
+            failed: false,
             wire_sent: 0,
             wire_received: 0,
         };
@@ -403,10 +407,23 @@ impl Channel {
         self.send_bytes(&serde_json::to_vec(value)?)
     }
     pub fn recv<T: DeserializeOwned>(&mut self) -> Result<T> {
-        serde_json::from_slice(&self.recv_bytes()?)
-            .map_err(|_| anyhow::anyhow!("malformed or unknown transfer message"))
+        let result = serde_json::from_slice(&self.recv_bytes()?)
+            .map_err(|_| anyhow::anyhow!("malformed or unknown transfer message"));
+        self.fail_closed(result)
+    }
+    fn fail_closed<T>(&mut self, result: Result<T>) -> Result<T> {
+        if result.is_err() {
+            self.failed = true;
+            let _ = self.socket.shutdown(Shutdown::Both);
+        }
+        result
     }
     pub fn send_bytes(&mut self, data: &[u8]) -> Result<()> {
+        ensure!(!self.failed, "channel is closed after a previous failure");
+        let result = self.send_bytes_inner(data);
+        self.fail_closed(result)
+    }
+    fn send_bytes_inner(&mut self, data: &[u8]) -> Result<()> {
         ensure!(data.len() <= FRAME_LIMIT, "message too large");
         let mut first = true;
         // All message lengths are authenticated inside Noise records.
@@ -424,6 +441,11 @@ impl Channel {
         Ok(())
     }
     pub fn recv_bytes(&mut self) -> Result<Vec<u8>> {
+        ensure!(!self.failed, "channel is closed after a previous failure");
+        let result = self.recv_bytes_inner();
+        self.fail_closed(result)
+    }
+    fn recv_bytes_inner(&mut self) -> Result<Vec<u8>> {
         let encrypted = recv_raw(&mut self.socket, RECORD + 16)?;
         self.wire_received += encrypted.len() as u64 + 4;
         let mut buf = vec![0; RECORD];
@@ -512,3 +534,16 @@ mod tests {
         }
     }
 }
+
+// Keep suite/role/bay separation in one testable derivation; never use the password as a PSK.
+fn derive_psk(session: &[u8], context: &[u8]) -> Result<Zeroizing<[u8; 32]>> {
+    let mut psk = Zeroizing::new([0u8; 32]);
+    hkdf::Hkdf::<sha2::Sha256>::new(Some(context), session)
+        .expand(b"SSync-4 Noise PAKE session PSK", psk.as_mut())
+        .map_err(|_| anyhow::anyhow!("key derivation failed"))?;
+    Ok(psk)
+}
+
+#[cfg(test)]
+#[path = "auth_tests.rs"]
+mod crypto_tests;

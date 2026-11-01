@@ -3,6 +3,8 @@
 - `README.md` — native usage, passwords, installation, platform scope and verification entrypoints.
 - `docs/CONTRACT.md` — frozen 4.0 CLI/configuration API and intentional Java migration differences.
 - `docs/PROTOCOL.md` — OPAQUE/Noise construction, authenticated transfer state machine, threat model and limits.
+- `docs/CRYPTO_REVIEW.md` — cryptographic integration findings, construction analysis, multi-bay risks and repeatable validation.
+- `src/auth_tests.rs` / `tests/podman/crypto.py` — authenticated record faults, key/context binding and real handshake-stage fault matrix.
 - `docs/SECURITY_REVIEW.md` — security/correctness findings, fixes, remaining trust boundaries and review evidence.
 - `tests/fs_durability.rs` / `tests/podman/review.py` — injected directory-sync failures and multi-user path-trust/DNS/comparison-disclosure regressions.
 - `docs/VALIDATION.md` — concrete test evidence, efficiency, platform scope and completed public release verification.
@@ -17,7 +19,7 @@
 - `src/backup.rs` — private line configs/templates, password-selected upload-only bays, bounded independent multi-server backup cycles.
 - `install.sh` — checksum-verified latest Linux release bootstrap, then native installation.
 - `tests/podman/bootstrap.py` — installer checksum/download failure preservation in a disposable peer.
-- `tests/podman/compatibility.py` — ordinary 4.0/4.1 cross-version transfers in both connection directions.
+- `tests/podman/compatibility.py` — ordinary 4.0 and backup 4.1 cross-version transfers with old/new clients and listeners.
 - `tests/podman/backup.py` — real backup fanout, defaults, isolation, failures, encryption, resume and malicious peer tests.
 - `src/runtime.rs` — listening/connecting independently of data direction, persistent operation, bounded admission/concurrency, cancellation and config workers.
 - `src/management.rs` — native local install/update/uninstall and ownership attached atomically to the executable.

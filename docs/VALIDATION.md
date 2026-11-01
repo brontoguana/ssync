@@ -1,4 +1,6 @@
-# SSync4.0.0 validation and delivery status
+# SSync validation and delivery history
+
+Current release preparation: **4.1.1**; see [the latest validation](#411-crypto-and-security-release).
 
 **SSync 4.0.0 is published and the public delivery smoke passes.** The public repository is [brontoguana/ssync](https://github.com/brontoguana/ssync), with [release v4.0.0](https://github.com/brontoguana/ssync/releases/tag/v4.0.0) pointing to source commit `decf099c73ee1df6424f35b87e7ca767853b1236`. On 2026-10-13, all six downloaded release assets matched the prepared files and SHA-256 manifest. `tests/podman/public_smoke.py --tag v4.0.0` downloaded and verified the public binary, installed it in the existing isolated peer, queried the real public updater (current/available 4.0.0, release details and explicit up-to-date result), and uninstalled it. No host files were mounted; the temporary egress network was removed. Raw evidence is in ignored `target/public-smoke.json` and `target/public-smoke-run.log`.
 
@@ -75,6 +77,30 @@ Published [SSync 4.1.0](https://github.com/brontoguana/ssync/releases/tag/v4.1.0
 
 The real public smoke passed inside the rootless large-profile peer: checksum-verified public download, root-owned default install, actual installed 4.0.0 -> 4.1.0 update via GitHub with release details, already-current 4.1.0 check, uninstall preserving transfer data, and the exact README `curl ... | bash` bootstrap. The temporary labelled egress network was disconnected/removed in cleanup. No production host installation or host mounts were used. Raw public output is in ignored `target/backup-public-smoke.log` / `target/public-smoke.json`; all local/raw investigation notes remain ignored. This follow-up documentation does not change the verified executable or release tag.
 
-## Unreleased security review — 2026-10-31
+## Security review — 2026-10-31 (before 4.1.1)
 
-[Full findings, fixes and remaining boundaries](SECURITY_REVIEW.md). Review evidence totals 146 recorded Podman checks across review builds, 18 native/parser tests and two explicit fsync-EIO probes; format/Clippy/MSRV/shellcheck/Python checks pass. The final development binary passed 53 application/targeted-review/backup checks after the last source-root and mount/config changes. The report distinguishes these from groups run on preceding review builds, and records the remaining unsuppressed transitive advisory and authenticated delta-comparison disclosure. No new public release, production installation or independent-audit claim is made. Published 4.1.0 assets remain unchanged.
+[Full findings, fixes and remaining boundaries](SECURITY_REVIEW.md). Review evidence totals 146 recorded Podman checks across review builds, 18 native/parser tests and two explicit fsync-EIO probes; format/Clippy/MSRV/shellcheck/Python checks pass. The final development binary passed 53 application/targeted-review/backup checks after the last source-root and mount/config changes. The report distinguishes these from groups run on preceding review builds, and records the remaining unsuppressed transitive advisory and authenticated delta-comparison disclosure. At that review completion, no new public release, production installation or independent-audit claim was made; published 4.1.0 assets stayed unchanged. The source hardening is included in 4.1.1 below.
+
+
+## 4.1.1 crypto and security release
+
+Local release validation completed 2026-11-01. This version includes the post-4.1.0 [security hardening](SECURITY_REVIEW.md) and [cryptographic integration review](CRYPTO_REVIEW.md). Wire suites/passwords/commands are unchanged. The implementation review is not an independent audit or security proof. One unsuppressed transitive crypto-bigint advisory remains, with selected-suite reachability assessed in those reports.
+
+**193 recorded Podman checks passed against the same static release-candidate binary**: SHA-256 `6ab178b501ee38bc671b7e40402e95fca0a977960696a3263fc426cfb7f7dc8f` (5,510,048 bytes). This is a new complete run, rather than the preceding review's counts across intermediate builds.
+
+| Suite | Passing checks |
+|---|---:|
+| Crypto handshake stage faults and valid baselines | 45 |
+| Ordinary application / targeted security review | 13 / 10 |
+| Security / lifecycle / input and configuration / advanced filesystem | 33 / 14 / 12 / 11 |
+| Backup / native management / bootstrap | 30 / 9 / 5 |
+| Cross-version interoperability / multi-GiB / long-duration | 6 / 4 / 1 |
+| **Total** | **193** |
+
+Additionally, **26 native/parser tests**, the **84 exact-tag upstream OPAQUE tests**, and **two explicitly injected fsync-EIO probes** pass. The two injection-only probes remain ignored by ordinary cargo test; their separate successful runs are recorded. Formatting, warnings-denied Clippy, Rust 1.88 all-target checking, shellcheck, Python and embedded-fixture syntax checks pass. Cargo audit has the documented single advisory, with no suppression. New crypto tests cover record boundaries, key/context separation, replay/reordering/reflection/cross-session rejection, malformed authenticated records, nonce exhaustion, permanent channel closure, all handshake stages and backup candidate routing attacks. An unused-candidate modification is explicitly tested as compatible with a valid selected login; whole-list authentication is not claimed.
+
+All application groups use the final production executable identity above, including ordinary transfers with public 4.0.0 and backups with public 4.1.0 in both old/new endpoint arrangements. Source/bay safety, delta comparison disclosure, cancelled/tampered resume, root ownership, reserved-name collisions and installer failure preservation are exercised. Synthetic update fixture **4.1.2 is private**, used only to verify an actual version increase from the 4.1.1 candidate.
+
+The final 2,400,000,017-byte transfer passes independent SHA-256 comparison, identical repetition sends zero content bytes, and an edit past 2 GiB sends exactly 200,000 bytes. Peak transfer RSS is 66,580 KiB. The rate-limited encrypted transfer completes in 121.83 seconds, beyond the 120-second idle timeout without a total-session cutoff. Two labelled rootless peers use bounded tmpfs/CPU/memory, dropped capabilities, no host-directory mounts or published ports; they share the host kernel.
+
+Public delivery verification follows publication: exact asset/checksum/source-manifest checks, the README bootstrap, a real public 4.1.0-to-4.1.1 native update, already-current reporting and uninstall in the disposable peer. It is not yet counted as completed here. No production host is installed or upgraded. Raw evidence is ignored under `target/crypto-audit-*`, `target/podman-*`, and `DEBUGLOG.md`.

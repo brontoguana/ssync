@@ -71,3 +71,7 @@ Reports must distinguish implemented/passed, failed, and unimplemented gates. Re
 ## Backup extension 4.1 release gates
 
 Run `tests/podman/backup.py` for actual two-source/two-server fanout, default/custom ports, config templates/privacy/preflight, exact password bay selection, independent failed destinations, latest-copy mirror/nodelete/filter/write-free dryrun, zero-content repeat and 200000-byte deltas, no ordinary download/upload dispatch, path/link/unknown-message/bad-block rejection, fresh/replayed/tampered/incomplete confirmation, verified interruption resume, same-bay concurrency exclusion and persistent listener recovery. Run the ordinary application/security/lifecycle suites to check the shared authentication/transfer code. See the dated 4.1 addendum in `docs/VALIDATION.md` for executed evidence; earlier sections describe 4.0.
+
+## Crypto integration and hardening (4.1.1)
+
+Run the native auth tests and `podman/crypto.py`: strict record/error closure, derivation/context separation, nonce exhaustion and all-stage ordinary/backup handshake fault rejection, plus candidate count/order/index attacks. Repeat the full native release matrix and public 4.1.0-to-4.1.1 install/update smoke. See `../docs/CRYPTO_REVIEW.md` for limits of the review and unsuppressed dependency finding.

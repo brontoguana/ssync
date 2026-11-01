@@ -10,7 +10,7 @@ Already installed? Run `sudo ssync update`.
 
 Native, password-authenticated file synchronization with fixed 200,000-byte deltas. Rust executable; no Java, Python or shell runtime required. Files and directories only: no script hooks or remote execution.
 
-Version **4.1.0** adds backup server/client modes to native SSync 4, which replaces Java SSync 3.3. The command interface is retained; the new wire protocol requires version 4 on both endpoints. Initial supported release target is **Linux x86_64, kernel 5.6+**, with a static musl binary. Other platforms are not claimed tested or supported. Procfs and case-sensitive local Linux filesystems are required; casefold, network/FUSE and pseudo filesystems fail closed.
+Version **4.1.1** includes security hardening and a [cryptographic integration review](docs/CRYPTO_REVIEW.md). Version **4.1.0** added backup server/client modes to native SSync 4, which replaces Java SSync 3.3. The command interface is retained; the new wire protocol requires version 4 on both endpoints. Initial supported release target is **Linux x86_64, kernel 5.6+**, with a static musl binary. Other platforms are not claimed tested or supported. Procfs and case-sensitive local Linux filesystems are required; casefold, network/FUSE and pseudo filesystems fail closed.
 
 ## Usage
 
