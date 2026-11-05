@@ -2,6 +2,8 @@
 
 ## 4.1.2 — 2026-11-05
 
+- Publish the exact tested binary; verify all six downloads, README bootstrap, real 4.1.1 upgrade, already-current reporting and uninstall in the disposable rootless lab.
+
 - Accept shared-writable source and destination directories by default for ordinary and backup transfers.
 - Add the local `sole-owned` qualifier on either peer to retain directory mode checks and receiver owner/ancestor checks; keep configuration/installation paths and private resume state protected.
 - Include the affected path in directory permission errors and document the local-writer trust boundary.

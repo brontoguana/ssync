@@ -1,6 +1,6 @@
 # SSync validation and delivery history
 
-Release candidate: **4.1.2**; see [directory policy validation](#412-directory-policy--2026-11-05).
+Current release: **4.1.2**; see [directory policy validation](#412-directory-policy--2026-11-05).
 
 **SSync 4.0.0 is published and the public delivery smoke passes.** The public repository is [brontoguana/ssync](https://github.com/brontoguana/ssync), with [release v4.0.0](https://github.com/brontoguana/ssync/releases/tag/v4.0.0) pointing to source commit `decf099c73ee1df6424f35b87e7ca767853b1236`. On 2026-10-13, all six downloaded release assets matched the prepared files and SHA-256 manifest. `tests/podman/public_smoke.py --tag v4.0.0` downloaded and verified the public binary, installed it in the existing isolated peer, queried the real public updater (current/available 4.0.0, release details and explicit up-to-date result), and uninstalled it. No host files were mounted; the temporary egress network was removed. Raw evidence is in ignored `target/public-smoke.json` and `target/public-smoke-run.log`.
 
@@ -107,8 +107,10 @@ Published [SSync 4.1.1](https://github.com/brontoguana/ssync/releases/tag/v4.1.1
 
 ## 4.1.2 directory policy — 2026-11-05
 
-Shared source/destination directories are accepted by default. Each ordinary/backup peer can independently request `sole-owned`; config/installation paths and private resume state retain their protections. The versioned 4.1.2 candidate has passed local release gates; public delivery verification follows publication.
+Shared source/destination directories are accepted by default. Each ordinary/backup peer can independently request `sole-owned`; config/installation paths and private resume state retain their protections. The versioned 4.1.2 binary and public delivery have passed the checks below.
 
 Pre-version-bump validation: `cargo test --locked` passed 29 native/parser tests (two syscall-injection durability probes remain explicitly ignored); `cargo clippy --locked --all-targets -- -D warnings` passed. The static musl production binary SHA-256 `b78e35b4601b25389cd15c7296f2f3c422917297705b6a8261497c729baa3417` passed 97 isolated Podman checks: sharing 11, application 13, review 10, backup 30, security 33. These cover shared roots/children, independently strict senders/receivers, backup defaults/preflight, private config/state, retained root identity checks, delta transfers, resume, cancellation, owner/ancestor checks in opt-in mode, and link/path attacks. Linux only; no new handle-soak/log-growth validation is claimed. Raw logs: ignored `target/directory-policy-*.log`, per-suite JSON, and `DEBUGLOG.md`.
 
 Versioned 4.1.2 release gate: 29 native/parser tests, warnings-denied Clippy, formatting and shell syntax checks pass. The production-only static musl binary SHA-256 `6dbb744906e1c77b08e3e9be9cebd7f0726b4f0bf821fe779b62825d0d824879` passed a fresh run of all 97 checks above (sharing 11, application 13, review 10, backup 30, security 33). No dependency or protocol changes. Raw evidence: ignored `target/release-412-*.log` and `target/release-412-tests.json`.
+
+Published [SSync 4.1.2](https://github.com/brontoguana/ssync/releases/tag/v4.1.2) from source commit `422006e55c611f4f7106ef892e879264ca36d03f`. All six public downloads match the local checksum-verified assets byte for byte; the release tag and latest-release API select 4.1.2. The disposable rootless peer passed the exact README bootstrap, root-owned installation, real 4.1.1-to-4.1.2 update, already-current check and uninstall. The temporary egress network and test installation were removed; no production installation was changed. Public evidence: ignored `target/release-412-public-receipt.json`, `target/release-412-public-smoke.json` and `target/release-412-public-smoke.log`.
