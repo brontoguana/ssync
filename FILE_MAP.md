@@ -16,6 +16,7 @@
 - `src/cli.rs` — local directory policy, qualifiers, Java-compatible aliases, password inputs, guidance and local-only commands.
 - `src/auth.rs` — unbiased Base58 generation, OPAQUE/Argon2id, Noise confirmation and bounded framing.
 - `src/fs.rs` — Linux openat2 capabilities, trusted write ancestry, device/mount-alias checks, reserved-state validation, durable directory operations, private partials and atomic replacement.
+- `tests/podman/config_protection.py` — nonfatal configuration transfer skips, mirror preservation, dry runs, old-peer and backup regressions.
 - `src/transfer.rs` — fixed 200,000-byte pipeline, overlapped comparison/streaming, verified resume, layouts, filters and verified-state deletion.
 - `src/backup.rs` — private line configs/templates, password-selected upload-only bays, bounded independent multi-server backup cycles.
 - `install.sh` — checksum-verified latest Linux release bootstrap, then native installation.

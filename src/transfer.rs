@@ -119,6 +119,18 @@ fn selected(path: &Path, sole_owned: bool) -> Result<Selected> {
         }
     }
 }
+// Protect configuration names and their descendants, including directory/file conflicts.
+// Match the CLI's case-insensitive configuration suffix.
+fn protected_config(path: &str) -> bool {
+    path.split('/')
+        .any(|part| part.to_ascii_lowercase().ends_with(".ssync"))
+}
+fn warn_config(path: &str) {
+    eprintln!(
+        "SSync warning: skipping protected .ssync path {:?}; continuing transfer",
+        path
+    );
+}
 fn filtered(path: &str, skip: &[String]) -> bool {
     skip.iter().any(|s| path.contains(s))
 }
@@ -273,6 +285,11 @@ fn send_entry(
     stop: &AtomicBool,
 ) -> Result<()> {
     cancelled(stop)?;
+    if protected_config(target) {
+        warn_config(target);
+        stats.skipped += 1;
+        return Ok(());
+    }
     if !target.is_empty() && filtered(target, skip) {
         return Ok(());
     }
@@ -504,7 +521,10 @@ fn receive(t: &Transfer, c: &mut Channel, connector: bool, stop: &AtomicBool) ->
                 ensure!(seen.insert(path.clone()), "duplicate entry");
                 path_bytes += path.len();
                 ensure!(path_bytes <= 8 * 1024 * 1024, "manifest path-byte limit");
-                if t.options.dryrun {
+                if protected_config(&path) {
+                    warn_config(&path);
+                    stats.skipped += 1;
+                } else if t.options.dryrun {
                     println!("Would create directory {:?}", path);
                     if let Some(m) = root.metadata(&path)? {
                         ensure!(m.is_dir(), "directory/file conflict");
@@ -600,6 +620,12 @@ fn receive_file(
         (-62_135_596_800..=253_402_300_799).contains(&modified.0) && modified.1 < 1_000_000_000,
         "unsupported modification timestamp"
     );
+    if protected_config(path) {
+        warn_config(path);
+        stats.skipped += 1;
+        c.send(&Message::Need { skip: true })?;
+        return Ok(());
+    }
     let meta = root.metadata(path)?;
     if let Some(m) = &meta {
         fs::regular(m)?;
@@ -839,6 +865,10 @@ fn delete_extras(
     stats: &mut Stats,
     stop: &AtomicBool,
 ) -> Result<()> {
+    if protected_config(path) {
+        warn_config(path);
+        return Ok(());
+    }
     if filtered(path, skip) {
         return Ok(());
     }
