@@ -32,7 +32,7 @@ pub enum Command {
     Server {
         port: u16,
         file: PathBuf,
-        verbose: bool,
+        options: Options,
     },
     Client {
         file: PathBuf,
@@ -74,7 +74,7 @@ pub fn parse_command(args: &[String], options: Options) -> Result<Command> {
             && options.skip.is_empty()
             && !options.merge
             && !options.force,
-        "backup-server accepts only verbose; backup policy qualifiers belong to backup-client"
+        "backup-server accepts only verbose and sole-owned; backup policy qualifiers belong to backup-client"
     );
     let mut port = PORT;
     let mut file = PathBuf::from("/opt/backup-server.ssync");
@@ -93,7 +93,7 @@ pub fn parse_command(args: &[String], options: Options) -> Result<Command> {
     Ok(Command::Server {
         port,
         file,
-        verbose: options.verbose,
+        options,
     })
 }
 fn destination(text: &str) -> Result<Destination> {
@@ -210,7 +210,7 @@ fn parse_config(data: &str, client: bool) -> Result<Config> {
     );
     Ok(Config { entries, servers })
 }
-fn load(file: &Path, client: bool) -> Result<Config> {
+fn load(file: &Path, client: bool, sole_owned: bool) -> Result<Config> {
     let file = fs::absolute(file)?;
     // Check missing via lstat; a symlink or unsafe existing entry must never be replaced.
     match std::fs::symlink_metadata(&file) {
@@ -285,7 +285,7 @@ fn load(file: &Path, client: bool) -> Result<Config> {
             !file.starts_with(&entry.path),
             "backup config must be outside source/bay directories"
         );
-        let root = Root::new(&entry.path)?;
+        let root = Root::with_policy(&entry.path, sole_owned)?;
         let meta = root.metadata("")?.context("directory missing")?;
         let key = root.storage_key()?;
         ensure!(
@@ -325,12 +325,19 @@ pub fn run(command: Command, control: Arc<Control>) -> Result<()> {
         Command::Server {
             port,
             file,
-            verbose,
-        } => server(port, load(&file, false)?, verbose, control),
-        Command::Client { file, options } => client(load(&file, true)?, options, control),
+            options,
+        } => server(
+            port,
+            load(&file, false, options.sole_owned)?,
+            options,
+            control,
+        ),
+        Command::Client { file, options } => {
+            client(load(&file, true, options.sole_owned)?, options, control)
+        }
     }
 }
-fn server(port: u16, config: Config, verbose: bool, control: Arc<Control>) -> Result<()> {
+fn server(port: u16, config: Config, options: Options, control: Arc<Control>) -> Result<()> {
     let credentials = config
         .entries
         .iter()
@@ -371,6 +378,7 @@ fn server(port: u16, config: Config, verbose: bool, control: Arc<Control>) -> Re
                     active.clone(),
                     control.clone(),
                 );
+                let options = options.clone();
                 workers.push(std::thread::spawn(move || {
                     let result = (|| -> Result<()> {
                         let _socket = control.track(&socket)?;
@@ -390,14 +398,7 @@ fn server(port: u16, config: Config, verbose: bool, control: Arc<Control>) -> Re
                             bail!("backup bay busy; retry later");
                         };
                         channel.send(&true)?;
-                        let t = transfer(
-                            &config.entries[selected],
-                            false,
-                            Options {
-                                verbose,
-                                ..Options::default()
-                            },
-                        );
+                        let t = transfer(&config.entries[selected], false, options);
                         transfer::run(&t, &mut channel, false, &control.stop)?;
                         Ok(())
                     })();

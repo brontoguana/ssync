@@ -55,6 +55,8 @@ After `lab.py up`, build the static musl main binary and test-only adversary, th
 
 ```bash
 python3 tests/podman/application.py
+python3 tests/podman/sharing.py
+python3 tests/podman/application.py  # restore fixtures after sharing suite
 python3 tests/podman/review.py
 python3 tests/podman/security.py
 python3 tests/podman/lifecycle.py
@@ -101,3 +103,5 @@ python3 tests/podman/crypto.py
 Do not combine the binary and example targets for release validation: Cargo's development-dependency feature unification changes the ctrlc/nix/bitflags build graph and executable identity. Record the tested production binary hash and package with `python3 scripts/build-release.py --expected-sha256 <tested-production-binary-sha256>` from committed source; this rejects a mismatch before changing release assets. Verify the archive binary hash too. Building only the helper later can also change the cached dependency graph; finish with the production-only build before testing. No adversarial helper is distributed as a release executable.
 
 The crypto runner tests each OPAQUE/Noise/ready stage and backup candidate manipulation. Run it separately from the ordinary matrix because setup resets only labelled synthetic data. Include `compatibility.py --previous <verified-4.0-binary> --backup-previous <verified-4.1.0-binary>` for ordinary and backup compatibility. Public 4.1.1 smoke uses `public_smoke.py --tag v4.1.1 --bootstrap --previous <verified-4.1.0-binary>`.
+
+`sharing.py` resets application fixtures and checks permissive shared source/bay defaults, independent `sole-owned` choices on ordinary peers, root/nested permission rejection, backup qualifiers, and retained private-config checks. Run it serially. Historical transfer owner/ancestor rejection checks in `review.py` explicitly request `sole-owned`.

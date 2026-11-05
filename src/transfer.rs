@@ -86,7 +86,7 @@ struct Selected {
     name: String,
     is_dir: bool,
 }
-fn selected(path: &Path) -> Result<Selected> {
+fn selected(path: &Path, sole_owned: bool) -> Result<Selected> {
     let abs = fs::absolute(path)?;
     let name = abs
         .file_name()
@@ -97,7 +97,7 @@ fn selected(path: &Path) -> Result<Selected> {
     fs::valid(&name)?;
     // A locally selected directory can itself be a mount/subvolume. Opening it
     // beneath its parent would incorrectly apply the child-mount prohibition.
-    match Root::new(&abs) {
+    match Root::with_policy(&abs, sole_owned) {
         Ok(root) => Ok(Selected {
             root,
             path: String::new(),
@@ -105,7 +105,7 @@ fn selected(path: &Path) -> Result<Selected> {
             is_dir: true,
         }),
         Err(directory_error) => {
-            let parent = Root::new(abs.parent().context("missing parent")?)?;
+            let parent = Root::with_policy(abs.parent().context("missing parent")?, sole_owned)?;
             let meta = parent.metadata(&name)?.context("source does not exist")?;
             if meta.is_dir() {
                 return Err(directory_error);
@@ -198,7 +198,7 @@ fn send(t: &Transfer, c: &mut Channel, connector: bool, stop: &AtomicBool) -> Re
     let sources = t
         .paths
         .iter()
-        .map(|p| selected(p))
+        .map(|p| selected(p, t.options.sole_owned))
         .collect::<Result<Vec<_>>>()?;
     ensure!(
         !sources.is_empty() && sources.len() <= 128,
@@ -490,7 +490,7 @@ fn receive(t: &Transfer, c: &mut Channel, connector: bool, stop: &AtomicBool) ->
     effective.options.dryrun |= remote_dry;
     effective.options.nodelete |= remote_nodelete;
     let t = &effective;
-    let root = Root::new(&t.paths[0])?;
+    let root = Root::with_policy(&t.paths[0], t.options.sole_owned)?;
     root.lock()?;
     let mut stats = Stats::default();
     let mut seen = BTreeSet::new();

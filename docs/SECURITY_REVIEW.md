@@ -1,5 +1,8 @@
 # SSync security and correctness review — 2026-10-31
 
+**Unreleased policy update:** transfer directories now accept shared writers by default, as explicitly requested. Use the local `sole-owned` qualifier on ordinary or backup senders/receivers to retain the directory trust checks described in this historical 4.1.1 review. Config/installation ancestry and private state remain strict. Shared destinations trust other local writers, who may replace or rename entries during transfer; containment checks are not a snapshot or isolation from those writers. Historical rejection tests now request `sole-owned`; `tests/podman/sharing.py` covers permissive defaults and independent peer policies.
+
+
 Scope: the native application at `cf76fb0`, including all nine Rust modules, bootstrap, release/notices scripts, the adversarial example, test runners, dependency lock and protocol/contract documentation. The ignored Java imports are historical references, not compiled or distributed application code. This is an implementation review and targeted testing, not an independent cryptographic audit or proof that no vulnerabilities exist.
 
 Status: fixes in this review are included in **4.1.1**, alongside the [cryptographic integration review](CRYPTO_REVIEW.md). The older 4.1.0 download does not contain them.

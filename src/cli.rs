@@ -14,6 +14,7 @@ pub struct Options {
     pub verify: bool,
     pub verbose: bool,
     pub force: bool,
+    pub sole_owned: bool,
     pub skip: Vec<String>,
 }
 #[derive(Clone)]
@@ -164,6 +165,7 @@ pub fn parse(args: &[String], env: Option<&str>) -> Result<Command> {
     let mut i = 0;
     while i < args.len() {
         match args[i].to_lowercase().as_str() {
+            "sole-owned" => o.sole_owned = true,
             "merge" => o.merge = true,
             "nodelete" => o.nodelete = true,
             "dryrun" => o.dryrun = true,
@@ -262,7 +264,7 @@ pub fn parse(args: &[String], env: Option<&str>) -> Result<Command> {
 pub const HELP: &str = concat!(
     "SSync v",
     env!("CARGO_PKG_VERSION"),
-    " — native file-only synchronization\n\nssync [merge nodelete dryrun verify verbose force skip:substring] <put|get|offer|accept> <location> [paths...]\n\nput/offer send; get/accept receive. put/get once; offer/accept continuously.\nlocation: port, alias, host:port, host:alias, [IPv6]:port; optional password@ prefix.\nPassword precedence: SSYNC_PASSWORD > SSYNC_PASSWORD_FILE > SSYNC_PASSWORD_FD > inline > prompt/generated listener. Minimum 16 characters.\nReceiver directory must exist. Default layout includes source basenames; receiver merge strips one directory name.\nDefault mirror deletion is confined to selected source directories; use nodelete to retain extras.\n\nssync [verbose] backup-server [port] [file] (default 8425, /opt/backup-server.ssync)\nssync [nodelete dryrun verify verbose skip:substring] backup-client [file] (default /opt/backup-client.ssync)\n\nssync pwd | version | licenses | ? | hash <dir> | deep <file> | scan <file> | <file.ssync>\nsudo ssync install | update | uninstall\nNo script execution. Both peers require version 4. Linux kernel 5.6+ required.\n"
+    " — native file-only synchronization\n\nssync [merge nodelete dryrun verify verbose force sole-owned skip:substring] <put|get|offer|accept> <location> [paths...]\n\nput/offer send; get/accept receive. put/get once; offer/accept continuously.\nlocation: port, alias, host:port, host:alias, [IPv6]:port; optional password@ prefix.\nPassword precedence: SSYNC_PASSWORD > SSYNC_PASSWORD_FILE > SSYNC_PASSWORD_FD > inline > prompt/generated listener. Minimum 16 characters.\nReceiver directory must exist. Default layout includes source basenames; receiver merge strips one directory name.\nShared-writable local directories are accepted by default. sole-owned rejects group/other-writable local roots and traversed directories; receivers also check owner/ancestors. Set independently on either peer.\nDefault mirror deletion is confined to selected source directories; use nodelete to retain extras.\n\nssync [verbose sole-owned] backup-server [port] [file] (default 8425, /opt/backup-server.ssync)\nssync [nodelete dryrun verify verbose sole-owned skip:substring] backup-client [file] (default /opt/backup-client.ssync)\n\nssync pwd | version | licenses | ? | hash <dir> | deep <file> | scan <file> | <file.ssync>\nsudo ssync install | update | uninstall\nNo script execution. Both peers require version 4. Linux kernel 5.6+ required.\n"
 );
 pub fn guide() -> Result<Vec<String>> {
     fn ask(label: &str) -> Result<String> {

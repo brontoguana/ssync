@@ -20,7 +20,7 @@ def preflight_root(bay, rootdir, client=False):
 p=pathlib.Path(sys.argv[1]);p.mkdir(exist_ok=True,mode=0o700)
 cfg=p/('client.ssync' if sys.argv[3]=='client' else 'server.ssync')
 cfg.write_text(('@127.0.0.1:49999\n' if sys.argv[3]=='client' else '')+sys.argv[4]+'='+sys.argv[2]+'\n');cfg.chmod(0o600)
-args=['backup-client',str(cfg)] if sys.argv[3]=='client' else ['backup-server','40912',str(cfg)]
+args=['sole-owned','backup-client',str(cfg)] if sys.argv[3]=='client' else ['sole-owned','backup-server','40912',str(cfg)]
 proc=subprocess.Popen(['/app/ssync',*args],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
 try:out,err=proc.communicate(timeout=4)
 except subprocess.TimeoutExpired:
@@ -43,13 +43,13 @@ p=pathlib.Path(sys.argv[1]);p.mkdir(mode=0o755);p.chmod(0o777)
     result = preflight_root(foreign+'/bay', rootdir)
     assert result['code'] != 0 and 'untrusted directory owner' in result['err'], result
     assert 'now accepting' not in result['out'], result
-    app.record('root-run backup rejects a different-user bay before listening', result=result)
+    app.record('sole-owned root-run backup rejects a different-user bay before listening', result=result)
     # An owned final bay is insufficient if another user owns its ancestor.
     as_user(B, 0, 'import pathlib,sys;pathlib.Path(sys.argv[1]).mkdir(mode=0o700)', foreign+'/owned-bay')
     as_user(B, 1001, 'import pathlib,sys;pathlib.Path(sys.argv[1]).chmod(0o755)', foreign)
     result = preflight_root(foreign+'/owned-bay', rootdir)
     assert result['code'] != 0 and 'untrusted directory owner' in result['err'], result
-    app.record('root-run backup rejects a different-user ancestor of an owned bay', result=result)
+    app.record('sole-owned root-run backup rejects a different-user ancestor of an owned bay', result=result)
     # This restriction must not prevent read-only backup of another user's source.
     result = preflight_root(foreign+'/bay', rootdir, client=True)
     assert result['code'] != 0 and 'cannot connect' in result['err'], result
@@ -63,9 +63,9 @@ p=pathlib.Path(sys.argv[1]);p.mkdir();p.chmod(0o777);(p/'bay').mkdir(mode=0o700)
     app.execute(B, r'''import pathlib,sys
 p=pathlib.Path(sys.argv[1]);p.write_text(sys.argv[2]+'='+sys.argv[3]+'\n');p.chmod(0o600)
 ''', cfg, app.PASSWORD, unsafe+'/bay')
-    result = app.command(B, ['backup-server', '40912', cfg])
+    result = app.command(B, ['sole-owned', 'backup-server', '40912', cfg])
     assert result['code'] != 0 and 'without sticky protection' in result['err'], result
-    app.record('owned bay rejects a writable nonsticky ancestor', result=result)
+    app.record('sole-owned bay rejects a writable nonsticky ancestor', result=result)
     # Config paths receive the same ancestor checks, even with a private file/parent.
     app.execute(B, r'''import pathlib,sys
 p=pathlib.Path(sys.argv[1])/'config';p.mkdir(mode=0o700)

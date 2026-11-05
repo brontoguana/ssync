@@ -59,3 +59,34 @@ fn path_contract_and_large_inputs() {
         assert!(fs::valid(p).is_ok(), "{p:?}");
     }
 }
+
+#[test]
+fn local_directory_policy_qualifier() {
+    for strict in [false, true] {
+        for action in [
+            "put",
+            "get",
+            "offer",
+            "accept",
+            "backup-server",
+            "backup-client",
+        ] {
+            let mut args = Vec::new();
+            if strict {
+                args.push("SoLe-OwNeD".to_string());
+            }
+            args.push(action.to_string());
+            if !action.starts_with("backup-") {
+                args.push("4000".to_string());
+            }
+            let command = cli::parse(&args, Some("abcdefghijklmnop")).unwrap();
+            let options = match command {
+                cli::Command::Transfer(t) => t.options,
+                cli::Command::Backup(ssync::backup::Command::Server { options, .. }) => options,
+                cli::Command::Backup(ssync::backup::Command::Client { options, .. }) => options,
+                _ => panic!("unexpected command"),
+            };
+            assert_eq!(options.sole_owned, strict, "{action}");
+        }
+    }
+}

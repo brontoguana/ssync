@@ -29,7 +29,18 @@ ssync get server:1500 ./downloads
 ssync ?                        # interactive guidance
 ```
 
-Receiver directories must already exist. Unreleased hardening requires writable destination directories and configuration ancestry to be owned by the current user or root, without unsafe writable ancestors; read-only sources can belong to other users. Without `merge`, items retain their source basenames. Receiver `merge` transfers a single directory's contents into the receiver root. Qualifiers precede the action: `merge`, `nodelete`, `dryrun`, `verify`, `verbose`, `force`/`noprompt`, `skip:substring`.
+Receiver directories must already exist. Without `merge`, items retain their source basenames. Receiver `merge` transfers a single directory's contents into the receiver root. Qualifiers precede the action: `merge`, `nodelete`, `dryrun`, `verify`, `verbose`, `force`/`noprompt`, `sole-owned`, `skip:substring`.
+
+Shared-writable source and destination directories are accepted by default (unreleased change). Add `sole-owned` **on either side independently** to reject group/other-writable local roots and traversed directories:
+
+```bash
+ssync sole-owned offer MyDocuments ./docs       # strict source directories
+ssync sole-owned get server:MyDocuments ./downloads  # strict destination directories
+ssync sole-owned backup-client /opt/backup-client.ssync
+ssync sole-owned backup-server /opt/backup-server.ssync
+```
+
+`sole-owned` retains the earlier directory policy: sources may belong to another user, while destination directories must be owned by the current user or root, with trusted ancestry (sticky shared ancestors such as `/tmp` are allowed). It does not require mode 700 or prohibit other users from reading. The option applies locally and is never imposed by the remote peer. Ordinary `.ssync` transfer lines also accept it. Default shared destinations trust local users who can modify the tree: noncooperating writers can rename entries or change files during a transfer, and advisory locks do not stop them. Link/path/mount containment, file-change checks, and private resume-state checks still apply. Configuration and installation paths retain their separate ownership/permission protections regardless of this option.
 
 **The default mirrors selected directories, including deletion of extra entries in those scopes.** Use `nodelete` to retain extras. Single-file transfers never delete neighbouring files. Filters protect matching paths from transfer and deletion. Deletion requires a complete verified manifest; `dryrun` writes neither payload nor staging files. `force` skips the transfer prompt; it cannot override safety/authentication checks.
 

@@ -142,9 +142,15 @@ fn case_sensitive(dir: &File) -> Result<()> {
 pub struct Root {
     dir: File,
     pub path: PathBuf,
+    sole_owned: bool,
 }
 impl Root {
+    /// Strict policy for configuration and installation paths.
     pub fn new(path: &Path) -> Result<Self> {
+        Self::with_policy(path, true)
+    }
+    /// Transfer roots opt into directory trust checks independently on each peer.
+    pub fn with_policy(path: &Path, sole_owned: bool) -> Result<Self> {
         let path = absolute(path)?;
         let base = File::open("/")?;
         // Opening the locally selected root may cross host mounts; all subsequent operations may not.
@@ -170,14 +176,20 @@ impl Root {
             std::io::Error::last_os_error()
         );
         let dir = unsafe { File::from_raw_fd(fd as i32) };
-        secure_dir(&dir.metadata()?)?;
+        secure_dir(&dir.metadata()?, sole_owned)
+            .with_context(|| format!("directory {:?}", path))?;
         case_sensitive(&dir)?;
-        Ok(Self { dir, path })
+        Ok(Self {
+            dir,
+            path,
+            sole_owned,
+        })
     }
     pub fn try_clone(&self) -> Result<Self> {
         Ok(Self {
             dir: self.dir.try_clone()?,
             path: self.path.clone(),
+            sole_owned: self.sole_owned,
         })
     }
     pub fn lock(&self) -> Result<()> {
@@ -215,11 +227,13 @@ impl Root {
     pub fn dir(&self, path: &str) -> Result<File> {
         self.checked_dir(path, false)
     }
-    /// Writers must not trust directory owners who can rename/chmod their tree.
-    /// Read-only sources intentionally permit other owners (e.g. root backing up users).
+    /// Strict writers also validate ownership and ancestry. Shared transfers deliberately
+    /// trust local writers; descriptor-based path/link/mount containment still applies.
     pub fn check_writable(&self) -> Result<()> {
         let mut parent = File::open("/")?;
-        trusted_ancestor(&parent.metadata()?)?;
+        if self.sole_owned {
+            trusted_ancestor(&parent.metadata()?)?;
+        }
         for part in self.path.components() {
             let std::path::Component::Normal(part) = part else {
                 continue;
@@ -234,7 +248,9 @@ impl Root {
             };
             ensure!(fd >= 0, "cannot verify destination ancestors");
             parent = unsafe { File::from_raw_fd(fd) };
-            trusted_ancestor(&parent.metadata()?)?;
+            if self.sole_owned {
+                trusted_ancestor(&parent.metadata()?)?;
+            }
         }
         let current = parent.metadata()?;
         let pinned = self.dir.metadata()?;
@@ -242,8 +258,11 @@ impl Root {
             current.dev() == pinned.dev() && current.ino() == pinned.ino(),
             "destination root changed"
         );
-        secure_dir(&pinned)?;
-        trusted_owner(&pinned)
+        secure_dir(&pinned, self.sole_owned)?;
+        if self.sole_owned {
+            trusted_owner(&pinned)?;
+        }
+        Ok(())
     }
     /// Map a configured root into its filesystem's namespace, including bind aliases.
     /// fdinfo selects the exact mount, avoiding ambiguity from stacked mount points.
@@ -259,8 +278,9 @@ impl Root {
             valid(path)?;
         }
         let mut dir = beneath(&self.dir, "", libc::O_RDONLY | libc::O_DIRECTORY, 0)?;
-        secure_dir(&dir.metadata()?)?;
-        if writable {
+        secure_dir(&dir.metadata()?, self.sole_owned)
+            .with_context(|| format!("directory {:?}", self.path))?;
+        if writable && self.sole_owned {
             trusted_owner(&dir.metadata()?)?;
         }
         case_sensitive(&dir)?;
@@ -272,8 +292,9 @@ impl Root {
                 }
                 prefix.push_str(part);
                 dir = beneath(&self.dir, &prefix, libc::O_RDONLY | libc::O_DIRECTORY, 0)?;
-                secure_dir(&dir.metadata()?)?;
-                if writable {
+                secure_dir(&dir.metadata()?, self.sole_owned)
+                    .with_context(|| format!("directory {:?}", self.path.join(&prefix)))?;
+                if writable && self.sole_owned {
                     trusted_owner(&dir.metadata()?)?;
                 }
                 case_sensitive(&dir)?;
@@ -493,9 +514,9 @@ impl Root {
 pub fn split(path: &str) -> (&str, &str) {
     path.rsplit_once('/').unwrap_or(("", path))
 }
-fn secure_dir(m: &Metadata) -> Result<()> {
+fn secure_dir(m: &Metadata, sole_owned: bool) -> Result<()> {
     ensure!(
-        m.is_dir() && m.mode() & 0o022 == 0,
+        m.is_dir() && (!sole_owned || m.mode() & 0o022 == 0),
         "directory is writable by other users or not a directory"
     );
     Ok(())
@@ -730,6 +751,58 @@ mod tests {
         let other = Root::new(temp.path()).unwrap();
         assert!(other.lock().is_err());
         drop(lock);
+    }
+    #[test]
+    fn shared_directory_policy_preserves_containment_and_private_state() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let nested = temp.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::write(nested.join("file"), b"shared").unwrap();
+        let shared = Root::with_policy(temp.path(), false).unwrap();
+        let strict = Root::with_policy(temp.path(), true).unwrap();
+        for mode in [0o775, 0o777] {
+            std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(mode)).unwrap();
+            assert!(shared.read("nested/file").is_ok());
+            shared.mkdirs("nested/new").unwrap();
+            assert!(strict.read("nested/file").is_err());
+            assert!(strict.mkdirs("nested/new").is_err());
+        }
+        std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(Root::with_policy(temp.path(), true).is_err());
+        shared.lock().unwrap();
+        assert!(shared.try_clone().unwrap().read("nested/file").is_ok());
+        symlink("/etc/passwd", nested.join("link")).unwrap();
+        assert!(shared.read("nested/link").is_err());
+        assert!(shared.read("../escape").is_err());
+        let (state, partial) = shared.stage(&"a".repeat(64)).unwrap();
+        assert_eq!(state.metadata().unwrap().mode() & 0o777, 0o700);
+        assert_eq!(partial.metadata().unwrap().mode() & 0o777, 0o600);
+        std::fs::set_permissions(
+            temp.path().join(STATE),
+            std::fs::Permissions::from_mode(0o777),
+        )
+        .unwrap();
+        assert!(shared.state().is_err());
+        assert!(open_config_file(&nested.join("file")).is_err());
+    }
+    #[test]
+    fn shared_destination_still_rejects_replaced_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let selected = temp.path().join("selected");
+        std::fs::create_dir(&selected).unwrap();
+        let root = Root::with_policy(&selected, false).unwrap();
+        std::fs::rename(&selected, temp.path().join("moved")).unwrap();
+        std::fs::create_dir(&selected).unwrap();
+        assert!(
+            root.lock()
+                .unwrap_err()
+                .to_string()
+                .contains("root changed")
+        );
+        assert!(root.mkdirs("child").is_err());
+        assert!(!temp.path().join("moved/child").exists());
+        assert!(!selected.join("child").exists());
     }
     #[test]
     fn atomic_conflict() {

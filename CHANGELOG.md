@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — directory sharing policy
+
+- Accept shared-writable source and destination directories by default for ordinary and backup transfers.
+- Add the local `sole-owned` qualifier on either peer to retain directory mode checks and receiver owner/ancestor checks; keep configuration/installation paths and private resume state protected.
+- Include the affected path in directory permission errors and document the local-writer trust boundary.
+- Validate 29 native/parser tests, warning-free lint, and 97 isolated sharing/transfer/backup/security regression checks.
+
 ## 4.1.1 — 2026-11-01
 
 - Publish the exact tested production artifact; verify all six public assets, the README installer, actual 4.1.0-to-4.1.1 update, already-current reporting and uninstall in the rootless lab.
