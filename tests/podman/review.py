@@ -66,14 +66,14 @@ p=pathlib.Path(sys.argv[1]);p.write_text(sys.argv[2]+'='+sys.argv[3]+'\n');p.chm
     result = app.command(B, ['sole-owned', 'backup-server', '40912', cfg])
     assert result['code'] != 0 and 'without sticky protection' in result['err'], result
     app.record('sole-owned bay rejects a writable nonsticky ancestor', result=result)
-    # Config paths receive the same ancestor checks, even with a private file/parent.
+    # Strict config paths retain ancestor checks, even with a private file/parent.
     app.execute(B, r'''import pathlib,sys
 p=pathlib.Path(sys.argv[1])/'config';p.mkdir(mode=0o700)
 f=p/'list.ssync';f.write_text('# empty\n');f.chmod(0o600)
 ''', unsafe)
-    result = app.command(B, [unsafe+'/config/list.ssync'])
+    result = app.command(B, ['sole-owned', unsafe+'/config/list.ssync'])
     assert result['code'] != 0 and 'without sticky protection' in result['err'], result
-    app.record('private config rejects an unsafe ancestor')
+    app.record('sole-owned private config rejects an unsafe ancestor')
     # Trusted ancestors only need search permission, not directory-listing permission.
     search_parent = '/work/ssync-review-search-' + unique
     as_user(B, 0, 'import pathlib,sys;p=pathlib.Path(sys.argv[1]);p.mkdir();p.chmod(0o777)', search_parent)

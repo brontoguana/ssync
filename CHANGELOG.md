@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased — configuration protection
+## 4.1.3 — 2026-11-05
 
-- Validate configuration protection with 30 native/parser tests, warnings-denied lint and 35 isolated container checks.
+- Validate the versioned production binary with 30 native/parser tests, warnings-denied lint and 108 isolated container checks; update the strict ancestor regression to select `sole-owned`.
 - Skip `.ssync` paths (case-insensitive) with a warning during ordinary and backup transfers; preserve destination configurations during mirror cleanup and continue other files. Updated senders omit configurations and updated receivers also refuse older senders’ configuration writes. Destination cleanup protection requires an updated receiver (or `nodelete` with older receivers).
 - Warn once and run ordinary `.ssync` configurations in shared-writable folders by default.
 - Add `ssync sole-owned file.ssync` to retain trusted configuration directories and enforce strict local directories on each contained transfer.

@@ -10,7 +10,7 @@ Already installed? Run `sudo ssync update`.
 
 Native, password-authenticated file synchronization with fixed 200,000-byte deltas. Rust executable; no Java, Python or shell runtime required. Files and directories only: no script hooks or remote execution.
 
-Version **4.1.2** accepts shared-writable directories by default and adds the optional local `sole-owned` policy. Version **4.1.1** includes security hardening and a [cryptographic integration review](docs/CRYPTO_REVIEW.md). Version **4.1.0** added backup server/client modes to native SSync 4, which replaces Java SSync 3.3. The command interface is retained; the new wire protocol requires version 4 on both endpoints. Initial supported release target is **Linux x86_64, kernel 5.6+**, with a static musl binary. Other platforms are not claimed tested or supported. Procfs and case-sensitive local Linux filesystems are required; casefold, network/FUSE and pseudo filesystems fail closed.
+Version **4.1.3** warns and continues for saved commands in shared folders, and skips `.ssync` files during transfers with a warning. Version **4.1.2** accepts shared-writable directories by default and adds the optional local `sole-owned` policy. Version **4.1.1** includes security hardening and a [cryptographic integration review](docs/CRYPTO_REVIEW.md). Version **4.1.0** added backup server/client modes to native SSync 4, which replaces Java SSync 3.3. The command interface is retained; the new wire protocol requires version 4 on both endpoints. Initial supported release target is **Linux x86_64, kernel 5.6+**, with a static musl binary. Other platforms are not claimed tested or supported. Procfs and case-sensitive local Linux filesystems are required; casefold, network/FUSE and pseudo filesystems fail closed.
 
 ## Usage
 
@@ -91,11 +91,11 @@ Fixed 200,000-byte comparisons, bounded pipelining, verified resume and final co
 
 ## Installation and updates
 
-Download the platform binary and `checksums.txt` from [SSync 4.1.2](https://github.com/brontoguana/ssync/releases/tag/v4.1.2). Check its SHA-256 before executing it. The public download, native install, up-to-date check and uninstall have been tested in the isolated Podman lab.
+Download the platform binary and `checksums.txt` from [SSync 4.1.3](https://github.com/brontoguana/ssync/releases/tag/v4.1.3). Check its SHA-256 before executing it. The public download, native install, up-to-date check and uninstall have been tested in the isolated Podman lab.
 
 ```bash
-curl -fLO https://github.com/brontoguana/ssync/releases/download/v4.1.2/ssync_linux_amd64
-curl -fLO https://github.com/brontoguana/ssync/releases/download/v4.1.2/checksums.txt
+curl -fLO https://github.com/brontoguana/ssync/releases/download/v4.1.3/ssync_linux_amd64
+curl -fLO https://github.com/brontoguana/ssync/releases/download/v4.1.3/checksums.txt
 sha256sum --ignore-missing --check checksums.txt
 chmod +x ./ssync_linux_amd64
 sudo ./ssync_linux_amd64 install
