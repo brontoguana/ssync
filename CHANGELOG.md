@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — directory sharing policy
+## 4.1.2 — 2026-11-05
 
 - Accept shared-writable source and destination directories by default for ordinary and backup transfers.
 - Add the local `sole-owned` qualifier on either peer to retain directory mode checks and receiver owner/ancestor checks; keep configuration/installation paths and private resume state protected.

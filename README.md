@@ -10,7 +10,7 @@ Already installed? Run `sudo ssync update`.
 
 Native, password-authenticated file synchronization with fixed 200,000-byte deltas. Rust executable; no Java, Python or shell runtime required. Files and directories only: no script hooks or remote execution.
 
-Version **4.1.1** includes security hardening and a [cryptographic integration review](docs/CRYPTO_REVIEW.md). Version **4.1.0** added backup server/client modes to native SSync 4, which replaces Java SSync 3.3. The command interface is retained; the new wire protocol requires version 4 on both endpoints. Initial supported release target is **Linux x86_64, kernel 5.6+**, with a static musl binary. Other platforms are not claimed tested or supported. Procfs and case-sensitive local Linux filesystems are required; casefold, network/FUSE and pseudo filesystems fail closed.
+Version **4.1.2** accepts shared-writable directories by default and adds the optional local `sole-owned` policy. Version **4.1.1** includes security hardening and a [cryptographic integration review](docs/CRYPTO_REVIEW.md). Version **4.1.0** added backup server/client modes to native SSync 4, which replaces Java SSync 3.3. The command interface is retained; the new wire protocol requires version 4 on both endpoints. Initial supported release target is **Linux x86_64, kernel 5.6+**, with a static musl binary. Other platforms are not claimed tested or supported. Procfs and case-sensitive local Linux filesystems are required; casefold, network/FUSE and pseudo filesystems fail closed.
 
 ## Usage
 
@@ -31,7 +31,7 @@ ssync ?                        # interactive guidance
 
 Receiver directories must already exist. Without `merge`, items retain their source basenames. Receiver `merge` transfers a single directory's contents into the receiver root. Qualifiers precede the action: `merge`, `nodelete`, `dryrun`, `verify`, `verbose`, `force`/`noprompt`, `sole-owned`, `skip:substring`.
 
-Shared-writable source and destination directories are accepted by default (unreleased change). Add `sole-owned` **on either side independently** to reject group/other-writable local roots and traversed directories:
+Shared-writable source and destination directories are accepted by default (since 4.1.2). Add `sole-owned` **on either side independently** to reject group/other-writable local roots and traversed directories:
 
 ```bash
 ssync sole-owned offer MyDocuments ./docs       # strict source directories
@@ -87,15 +87,15 @@ Both endpoints need **4.1+ for backup mode**. Ordinary transfer commands retain 
 
 Current inherited safety limits include **16 GiB per file, 10,000 manifest entries per source, and 16 GiB of private partial state per bay**. Oversized backups fail clearly rather than silently omitting files.
 
-Fixed 200,000-byte comparisons, bounded pipelining, verified resume and final content verification are reused. Each destination currently scans/hashes independently, reading unchanged contents for integrity; persistent indexing and sharing scans between destinations are future optimizations. `.ssync-state` is reserved for private resume files, which are excluded from transfers; unreleased hardening makes incompatible entries with that name fail clearly. See [backup command contract](docs/CONTRACT.md#backup-commands-41).
+Fixed 200,000-byte comparisons, bounded pipelining, verified resume and final content verification are reused. Each destination currently scans/hashes independently, reading unchanged contents for integrity; persistent indexing and sharing scans between destinations are future optimizations. `.ssync-state` is reserved for private resume files, which are excluded from transfers; 4.1.1 hardening makes incompatible entries with that name fail clearly. See [backup command contract](docs/CONTRACT.md#backup-commands-41).
 
 ## Installation and updates
 
-Download the platform binary and `checksums.txt` from [SSync 4.1.0](https://github.com/brontoguana/ssync/releases/tag/v4.1.0). Check its SHA-256 before executing it. The public download, native install, up-to-date check and uninstall have been tested in the isolated Podman lab.
+Download the platform binary and `checksums.txt` from [SSync 4.1.2](https://github.com/brontoguana/ssync/releases/tag/v4.1.2). Check its SHA-256 before executing it. The public download, native install, up-to-date check and uninstall have been tested in the isolated Podman lab.
 
 ```bash
-curl -fLO https://github.com/brontoguana/ssync/releases/download/v4.1.0/ssync_linux_amd64
-curl -fLO https://github.com/brontoguana/ssync/releases/download/v4.1.0/checksums.txt
+curl -fLO https://github.com/brontoguana/ssync/releases/download/v4.1.2/ssync_linux_amd64
+curl -fLO https://github.com/brontoguana/ssync/releases/download/v4.1.2/checksums.txt
 sha256sum --ignore-missing --check checksums.txt
 chmod +x ./ssync_linux_amd64
 sudo ./ssync_linux_amd64 install
@@ -105,7 +105,7 @@ sudo ssync uninstall
 
 Install/update use native filesystem/network APIs and atomic replacement. Linux ownership metadata is attached to the staged executable, so the binary and ownership commit together. Updates consult this project's GitHub releases, print current/available versions and release notes, verify the exact platform asset's SHA-256, and preserve the installed executable on failed downloads/checks. An unowned or modified executable is never overwritten/removed. Uninstall removes owned installation files and preserves transfer data. Default path: `/usr/local/bin/ssync`; `SSYNC_INSTALL_DIR` supports private/disposable installations. Management is local-only, never accepted over the protocol or in `.ssync` lists.
 
-SHA-256 from the same GitHub release verifies artifact integrity, not independent publisher authenticity. GitHub account/release compromise remains a trust risk. The optional bootstrap above runs a shell script from this repository; installed SSync performs updates through native APIs without scripts. See [security/channel design](docs/PROTOCOL.md), [command/migration contract](docs/CONTRACT.md), and the [security review and unreleased fixes](docs/SECURITY_REVIEW.md).
+SHA-256 from the same GitHub release verifies artifact integrity, not independent publisher authenticity. GitHub account/release compromise remains a trust risk. The optional bootstrap above runs a shell script from this repository; installed SSync performs updates through native APIs without scripts. See [security/channel design](docs/PROTOCOL.md), [command/migration contract](docs/CONTRACT.md), and the [security review](docs/SECURITY_REVIEW.md).
 
 ## Development and verification
 
