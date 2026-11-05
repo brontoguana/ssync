@@ -12,7 +12,7 @@
 - `PORT_REVIEW.md` — original source assessment and Java reference verification history.
 - `Cargo.toml` / `Cargo.lock` — Rust package, minimum toolchain and pinned dependencies.
 - `src/main.rs` / `src/lib.rs` — executable dispatch and native library modules.
-- `tests/podman/sharing.py` — shared-directory defaults, independent local `sole-owned` checks, backup preflight and private config regressions.
+- `tests/podman/sharing.py` — shared-directory defaults, independent local `sole-owned` checks, backup preflight, shared-config warnings and strict/private config regressions.
 - `src/cli.rs` — local directory policy, qualifiers, Java-compatible aliases, password inputs, guidance and local-only commands.
 - `src/auth.rs` — unbiased Base58 generation, OPAQUE/Argon2id, Noise confirmation and bounded framing.
 - `src/fs.rs` — Linux openat2 capabilities, trusted write ancestry, device/mount-alias checks, reserved-state validation, durable directory operations, private partials and atomic replacement.

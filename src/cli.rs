@@ -42,7 +42,7 @@ pub enum Command {
     Guide,
     Diagnostic(String, PathBuf),
     Management(String),
-    Config(PathBuf),
+    Config(PathBuf, bool),
     Licenses,
     Backup(crate::backup::Command),
 }
@@ -146,7 +146,7 @@ pub fn parse(args: &[String], env: Option<&str>) -> Result<Command> {
             _ => {}
         }
         if args[0].to_lowercase().ends_with(".ssync") {
-            return Ok(Command::Config(args[0].clone().into()));
+            return Ok(Command::Config(args[0].clone().into(), false));
         }
         if std::path::Path::new(&args[0]).is_file() {
             return Ok(Command::Diagnostic(
@@ -154,6 +154,12 @@ pub fn parse(args: &[String], env: Option<&str>) -> Result<Command> {
                 args[0].clone().into(),
             ));
         }
+    }
+    if args.len() == 2
+        && args[0].eq_ignore_ascii_case("sole-owned")
+        && args[1].to_lowercase().ends_with(".ssync")
+    {
+        return Ok(Command::Config(args[1].clone().into(), true));
     }
     if args.len() == 2 && matches!(args[0].to_lowercase().as_str(), "hash" | "deep" | "scan") {
         return Ok(Command::Diagnostic(
@@ -264,7 +270,7 @@ pub fn parse(args: &[String], env: Option<&str>) -> Result<Command> {
 pub const HELP: &str = concat!(
     "SSync v",
     env!("CARGO_PKG_VERSION"),
-    " — native file-only synchronization\n\nssync [merge nodelete dryrun verify verbose force sole-owned skip:substring] <put|get|offer|accept> <location> [paths...]\n\nput/offer send; get/accept receive. put/get once; offer/accept continuously.\nlocation: port, alias, host:port, host:alias, [IPv6]:port; optional password@ prefix.\nPassword precedence: SSYNC_PASSWORD > SSYNC_PASSWORD_FILE > SSYNC_PASSWORD_FD > inline > prompt/generated listener. Minimum 16 characters.\nReceiver directory must exist. Default layout includes source basenames; receiver merge strips one directory name.\nShared-writable local directories are accepted by default. sole-owned rejects group/other-writable local roots and traversed directories; receivers also check owner/ancestors. Set independently on either peer.\nDefault mirror deletion is confined to selected source directories; use nodelete to retain extras.\n\nssync [verbose sole-owned] backup-server [port] [file] (default 8425, /opt/backup-server.ssync)\nssync [nodelete dryrun verify verbose sole-owned skip:substring] backup-client [file] (default /opt/backup-client.ssync)\n\nssync pwd | version | licenses | ? | hash <dir> | deep <file> | scan <file> | <file.ssync>\nsudo ssync install | update | uninstall\nNo script execution. Both peers require version 4. Linux kernel 5.6+ required.\n"
+    " — native file-only synchronization\n\nssync [merge nodelete dryrun verify verbose force sole-owned skip:substring] <put|get|offer|accept> <location> [paths...]\n\nput/offer send; get/accept receive. put/get once; offer/accept continuously.\nlocation: port, alias, host:port, host:alias, [IPv6]:port; optional password@ prefix.\nPassword precedence: SSYNC_PASSWORD > SSYNC_PASSWORD_FILE > SSYNC_PASSWORD_FD > inline > prompt/generated listener. Minimum 16 characters.\nReceiver directory must exist. Default layout includes source basenames; receiver merge strips one directory name.\nShared-writable local directories are accepted by default. sole-owned rejects group/other-writable local roots and traversed directories; receivers also check owner/ancestors. Set independently on either peer.\nDefault mirror deletion is confined to selected source directories; use nodelete to retain extras.\n\nssync [verbose sole-owned] backup-server [port] [file] (default 8425, /opt/backup-server.ssync)\nssync [nodelete dryrun verify verbose sole-owned skip:substring] backup-client [file] (default /opt/backup-client.ssync)\n\nssync pwd | version | licenses | ? | hash <dir> | deep <file> | scan <file> | [sole-owned] <file.ssync>\nsudo ssync install | update | uninstall\nNo script execution. Both peers require version 4. Linux kernel 5.6+ required.\n"
 );
 pub fn guide() -> Result<Vec<String>> {
     fn ask(label: &str) -> Result<String> {

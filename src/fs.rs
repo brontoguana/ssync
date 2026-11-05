@@ -671,6 +671,27 @@ pub fn open_local_file(path: &Path) -> Result<File> {
             .context("filename must be UTF8")?,
     )
 }
+/// Ordinary configs allow shared parents; password/backup configs retain strict paths.
+pub fn open_transfer_config(path: &Path, sole_owned: bool) -> Result<File> {
+    if sole_owned {
+        return open_config_file(path);
+    }
+    let path = absolute(path)?;
+    let parent = Root::with_policy(path.parent().context("config parent missing")?, false)?;
+    parent.check_writable()?;
+    if parent.dir.metadata()?.mode() & 0o022 != 0 {
+        eprintln!(
+            "SSync warning: configuration directory {:?} is writable by other users; they can replace the configuration. Continuing.",
+            parent.path
+        );
+    }
+    parent.read(
+        path.file_name()
+            .context("config filename missing")?
+            .to_str()
+            .context("filename must be UTF8")?,
+    )
+}
 pub fn open_config_file(path: &Path) -> Result<File> {
     let path = absolute(path)?;
     let parent = Root::new(path.parent().context("config parent missing")?)?;

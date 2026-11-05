@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — configuration directory policy
+
+- Warn once and run ordinary `.ssync` configurations in shared-writable folders by default.
+- Add `ssync sole-owned file.ssync` to retain trusted configuration directories and enforce strict local directories on each contained transfer.
+- Retain configuration-file ownership/mode checks and separate password-file, backup-configuration and installation protections.
+- Validate 30 native/parser tests, warnings-denied lint and 16 isolated sharing/config/backup-policy checks.
+
 ## 4.1.2 — 2026-11-05
 
 - Publish the exact tested binary; verify all six downloads, README bootstrap, real 4.1.1 upgrade, already-current reporting and uninstall in the disposable rootless lab.

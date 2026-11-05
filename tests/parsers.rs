@@ -90,3 +90,19 @@ fn local_directory_policy_qualifier() {
         }
     }
 }
+
+#[test]
+fn saved_config_directory_policy() {
+    for strict in [false, true] {
+        let mut args = vec![];
+        if strict {
+            args.push("SoLe-OwNeD".to_owned());
+        }
+        args.push("saved.SSYNC".to_owned());
+        let cli::Command::Config(path, policy) = cli::parse(&args, None).unwrap() else {
+            panic!("expected config");
+        };
+        assert_eq!(path, std::path::PathBuf::from("saved.SSYNC"));
+        assert_eq!(policy, strict);
+    }
+}

@@ -61,6 +61,35 @@ pathlib.Path(str(p)+sys.argv[2]).chmod(0o775)
             assert result['code'] != 0 and server['code'] != 0, (result, server)
             assert 'writable by other users' in failure['err'], failure
         app.record('strict root and nested permission checks', shared_part=shared_part)
+    # Saved ordinary commands run from shared folders, with one warning.
+    app.execute(A, 'import pathlib,sys;pathlib.Path(sys.argv[1]).chmod(0o775)', source)
+    cfg = source+'/upload.ssync'
+    command_text = 'force put '+ip+':40920 '+source+'/nested\n'
+    app.execute(A, 'import pathlib,sys;p=pathlib.Path(sys.argv[1]);p.write_text(sys.argv[2]);p.chmod(0o600)', cfg, command_text)
+    job = app.start(B, ['force', 'get', '40920', dest]); app.ready(job)
+    result = app.command(A, [cfg]); app.stats(result); app.stats(app.wait(job))
+    assert result['err'].count('SSync warning:') == 1, result
+    assert 'can replace the configuration' in result['err'], result
+    app.record('shared ordinary config warns once and transfers successfully')
+    result = app.command(A, ['sole-owned', cfg])
+    assert result['code'] != 0 and 'writable by other users' in result['err'], result
+    app.record('explicit strict config rejects shared parent')
+    private_cfg = BASE+'/strict-transfer.ssync'
+    app.execute(A, 'import pathlib,sys;p=pathlib.Path(sys.argv[1]);p.write_text(sys.argv[2]);p.chmod(0o600)', private_cfg, command_text)
+    job = app.start(B, ['force', 'get', '40920', dest]); app.ready(job)
+    result = app.command(A, ['sole-owned', private_cfg]); server_result = app.wait(job)
+    assert result['code'] != 0 and server_result['code'] != 0, (result, server_result)
+    assert 'writable by other users' in result['err'], result
+    app.record('strict config propagates policy to contained local transfers')
+    app.execute(A, 'import pathlib,sys;pathlib.Path(sys.argv[1]).chmod(0o666)', cfg)
+    result = app.command(A, [cfg])
+    assert result['code'] != 0 and 'unsafe or oversized' in result['err'], result
+    app.record('shared config directory retains file mode protection')
+    app.execute(A, 'import pathlib,sys;p=pathlib.Path(sys.argv[1]);p.unlink();p.symlink_to(sys.argv[2])', cfg, private_cfg)
+    result = app.command(A, [cfg])
+    assert result['code'] != 0, result
+    app.record('shared config directory rejects config symlink')
+    app.execute(A, 'import pathlib,sys;pathlib.Path(sys.argv[1]).unlink()', cfg)
     client_cfg, server_cfg = BASE+'/client.ssync', BASE+'/server.ssync'
     for peer, path, text in [(A, client_cfg, '@'+ip+':40921\n'+app.PASSWORD+'='+source+'\n'),
                              (B, server_cfg, app.PASSWORD+'='+dest+'\n')]:

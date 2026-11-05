@@ -360,9 +360,9 @@ pub fn diagnostic(action: &str, path: &Path) -> Result<()> {
     }
     Ok(())
 }
-pub fn config(path: &Path, control: Arc<Control>) -> Result<()> {
+pub fn config(path: &Path, sole_owned: bool, control: Arc<Control>) -> Result<()> {
     use std::os::unix::fs::MetadataExt;
-    let file = fs::open_config_file(path)?;
+    let file = fs::open_transfer_config(path, sole_owned)?;
     let m = file.metadata()?;
     ensure!(
         m.mode() & 0o022 == 0 && m.len() <= 1_048_576,
@@ -382,10 +382,11 @@ pub fn config(path: &Path, control: Arc<Control>) -> Result<()> {
         }
         let args = shell_words::split(line)
             .map_err(|_| anyhow::anyhow!("invalid quoted .ssync command"))?;
-        let Command::Transfer(t) = cli::parse(&args, password.as_deref().map(|s| s.as_str()))?
+        let Command::Transfer(mut t) = cli::parse(&args, password.as_deref().map(|s| s.as_str()))?
         else {
             bail!(".ssync permits only file transfer commands");
         };
+        t.options.sole_owned |= sole_owned;
         commands.push(t);
         ensure!(commands.len() <= 32, ".ssync command limit");
     }

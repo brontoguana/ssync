@@ -18,7 +18,7 @@ fn run() -> Result<()> {
     let command = cli::parse(&args, std::env::var("SSYNC_PASSWORD").ok().as_deref())?;
     if matches!(
         &command,
-        Command::Transfer(_) | Command::Config(_) | Command::Guide | Command::Backup(_)
+        Command::Transfer(_) | Command::Config(..) | Command::Guide | Command::Backup(_)
     ) {
         let signal = control.clone();
         ctrlc::set_handler(move || signal.cancel())?;
@@ -38,7 +38,7 @@ fn run() -> Result<()> {
         }
         Command::Transfer(t) => runtime::transfer_command(t, control)?,
         Command::Diagnostic(a, p) => runtime::diagnostic(&a, &p)?,
-        Command::Config(p) => runtime::config(&p, control)?,
+        Command::Config(p, sole_owned) => runtime::config(&p, sole_owned, control)?,
         Command::Management(a) => management::run(&a)?,
         Command::Backup(command) => ssync::backup::run(command, control)?,
     }
