@@ -1,6 +1,6 @@
 # SSync validation and delivery history
 
-Current version: **4.1.5**; see [the listener and disk-headroom release gate](#415-listener-and-disk-headroom-release-gate--2026-11-18).
+Current release: **4.1.5**; see [the listener and disk-headroom release gate](#415-listener-and-disk-headroom-release-gate--2026-11-18).
 
 **SSync 4.0.0 is published and the public delivery smoke passes.** The public repository is [brontoguana/ssync](https://github.com/brontoguana/ssync), with [release v4.0.0](https://github.com/brontoguana/ssync/releases/tag/v4.0.0) pointing to source commit `decf099c73ee1df6424f35b87e7ca767853b1236`. On 2026-10-13, all six downloaded release assets matched the prepared files and SHA-256 manifest. `tests/podman/public_smoke.py --tag v4.0.0` downloaded and verified the public binary, installed it in the existing isolated peer, queried the real public updater (current/available 4.0.0, release details and explicit up-to-date result), and uninstalled it. No host files were mounted; the temporary egress network was removed. Raw evidence is in ignored `target/public-smoke.json` and `target/public-smoke-run.log`.
 
@@ -189,3 +189,9 @@ Six loopback cases passed with the production binary, covering both one-shot dir
 Tested executable SHA-256: `86789fc5049cf7351fe9cf1324111fb3fda8ea04f5c0e13b6a2f09ab5c1a6c53`. Packaging must enforce this identity. The added-source scan found no credential patterns or private machine paths. Evidence: ignored `target/release-415/{identity,summary,suites}.json`, individual suite logs, `receiver_limits.log`, `loopback.log`, `compatibility.log` and `DEBUGLOG.md`.
 
 The disk cutoff is filesystem-wide and best effort under concurrent allocations, not a per-bay quota. Distributed sources can still exhaust listener admission. Merge/backup root mode handling and general saved-configuration sibling cancellation on local failures are unchanged. No production listener or installation was modified during validation.
+
+### 4.1.5 public delivery
+
+Published [v4.1.5](https://github.com/brontoguana/ssync/releases/tag/v4.1.5) from exact source commit `17a939bc88b6b28a7fe582bc757e488a2060aa39`. All six anonymous public downloads match their prepared SHA-256 hashes and sizes. The GitHub tag resolves to that source commit, and the binary archive contains the exact tested executable plus README, licence and dependency notices. The clean source archive includes the new regression runner and excludes private/debug/reference-import artifacts.
+
+The disposable rootless peer passed checksum-verified public download, root-owned installation, a real installed **4.1.4-to-4.1.5** public update, already-current reporting, uninstall and the exact README bootstrap. The temporary egress network and installed executable were removed. No production installation was upgraded. Evidence: ignored `target/release-415/public-receipt.json`, `prepared-manifest.json`, `public-smoke.json`, `public-smoke.log` and `DEBUGLOG.md`. This documentation follow-up leaves the source tag and tested executable unchanged.

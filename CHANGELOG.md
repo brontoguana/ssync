@@ -2,6 +2,8 @@
 
 ## 4.1.5 — 2026-11-18
 
+- Publish the exact tested binary; verify all six public downloads, README bootstrap, real 4.1.4 upgrade, already-current reporting and uninstall in the disposable rootless lab.
+
 - Validate the exact versioned static binary with 37 native/parser tests, 188 recorded container checks, dedicated listener/disk-headroom regressions, six loopback cases, four 4.1.4 compatibility cases, formatting and warnings-denied lint.
 
 - Add repeatable idle-peer and disk-headroom regressions. Update authentication fault tests to require one-shot listener survival and a subsequent valid transfer.
