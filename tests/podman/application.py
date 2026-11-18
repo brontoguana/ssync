@@ -31,7 +31,12 @@ def setup(binary):
         execute(peer, '''import pathlib,os,shutil
 p=pathlib.Path('/app/ssync'); p.chmod(0o755)
 p=pathlib.Path('/work/app-tests')
-if p.exists(): shutil.rmtree(p)
+if p.exists():
+ # Permission-preservation fixtures can leave read-only directories behind.
+ # Restore owner access inside this disposable fixture tree before cleanup.
+ for directory,_,_ in os.walk(p,followlinks=False):
+  d=pathlib.Path(directory);d.chmod((d.stat().st_mode&0o777)|0o700)
+ shutil.rmtree(p)
 p.mkdir(mode=0o700)
 (p/'outside').mkdir();(p/'outside/canary').write_bytes(b'CANARY')
 ''')

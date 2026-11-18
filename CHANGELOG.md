@@ -1,5 +1,19 @@
 # Changelog
 
+## 4.1.4 — 2026-11-18
+
+- Validate the versioned production binary with 34 native/parser tests, 153 isolated container checks, warnings-denied lint and formatting.
+
+- Reproduce source read/write/execute permissions on new, replaced and content-identical files and directories, including merge and backup roots. Exclude ownership, groups, ACLs and special mode bits. Keep private staging and finalize directory modes after cleanup and normal failures; forced termination may require a rerun.
+- Add `--chmod MODE` / `chmod:MODE` and `permissions` aliases to override all copied file modes, including unchanged files and link descriptions. Receiver overrides take priority; directories retain source modes.
+- Describe source symlinks as inert `.ssynclink` files without following their targets. Copy hard-linked regular contents independently with relationship descriptions and manual recreation instructions. Reject projected-name collisions before copying.
+- Copy `.ssync` sources as inert `.ssyncbak` names in ordinary transfers and backups, including direct selections and directory components. Keep live destination configurations protected; apply filters to original and projected paths.
+- Skip source `.ssync-state` entries without inspecting ownership or contents. Exclude the configured `SSYNC_PASSWORD_FILE` and its hard-link aliases from copying, replacement, mode changes and mirror deletion. Retain private receiving-state and credential-use checks.
+- Restore structured main help and add `ssync --help <topic>` (also `ssync help <topic>`) for permissions, links, mirroring, passwords, configurations, backups and compatibility. Include the default-versus-`chmod:600` permissions table.
+- Include rejected paths, busy destination roots and failed action/listener ports in diagnostics. Keep destination link protections, concurrent-writer exclusion and ordinary-configuration sibling cancellation unchanged.
+- Require updated endpoints for ordinary and backup transfers; mixed versions refuse before modifying transfer data. Restart listeners after upgrading.
+- Update the parser mutation seed for permission-bearing file messages and isolate security/advanced fixtures. Development validation and final versioned release evidence are recorded in `docs/VALIDATION.md`.
+
 ## 4.1.3 — 2026-11-05
 
 - Publish the exact tested binary; verify all six public assets, README bootstrap, real 4.1.2 upgrade, already-current reporting and uninstall in the disposable rootless lab.

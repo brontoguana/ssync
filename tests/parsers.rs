@@ -4,7 +4,8 @@ use ssync::{cli, fs, transfer::Message};
 #[test]
 fn bounded_mutated_protocol_and_cli_inputs() {
     let mut random = StdRng::seed_from_u64(0x5353594e4334);
-    let seed=br#"{"type":"File","path":"source/file","size":200000,"modified_secs":1,"modified_nanos":0,"hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#;
+    let seed=br#"{"type":"File","path":"source/file","size":200000,"modified_secs":1,"modified_nanos":0,"mode":420,"hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#;
+    assert!(serde_json::from_slice::<Message>(seed).is_ok());
     for i in 0..20_000 {
         let mut bytes = if i % 2 == 0 {
             seed.to_vec()
@@ -104,5 +105,48 @@ fn saved_config_directory_policy() {
         };
         assert_eq!(path, std::path::PathBuf::from("saved.SSYNC"));
         assert_eq!(policy, strict);
+    }
+}
+
+#[test]
+fn permission_override_syntax_and_bounds() {
+    for words in [
+        vec!["--chmod", "644"],
+        vec!["chmod:0644"],
+        vec!["permissions:644"],
+        vec!["--permissions", "644"],
+        vec!["--chmod=644"],
+        vec!["--permissions=0644"],
+        vec!["chmod", "644"],
+        vec!["permissions", "644"],
+    ] {
+        let mut args: Vec<String> = words.iter().map(|s| s.to_string()).collect();
+        args.extend(["put".into(), "4000".into()]);
+        let cli::Command::Transfer(t) = cli::parse(&args, Some("abcdefghijklmnop")).unwrap() else {
+            panic!()
+        };
+        assert_eq!(t.options.chmod, Some(0o644));
+    }
+    for invalid in [
+        "", "64", "888", "-1", "7777", "4755", "0o644", "u=rw", "06444",
+    ] {
+        assert!(
+            cli::parse(
+                &[format!("chmod:{invalid}"), "put".into(), "4000".into()],
+                Some("abcdefghijklmnop")
+            )
+            .is_err(),
+            "{invalid}"
+        );
+    }
+    assert!(cli::parse(&["--chmod".into()], None).is_err());
+    for action in ["backup-client", "backup-server"] {
+        let command = cli::parse(&["chmod:755".into(), action.into()], None).unwrap();
+        let options = match command {
+            cli::Command::Backup(ssync::backup::Command::Server { options, .. })
+            | cli::Command::Backup(ssync::backup::Command::Client { options, .. }) => options,
+            _ => panic!(),
+        };
+        assert_eq!(options.chmod, Some(0o755));
     }
 }

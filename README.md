@@ -10,9 +10,41 @@ Already installed? Run `sudo ssync update`.
 
 Native, password-authenticated file synchronization with fixed 200,000-byte deltas. Rust executable; no Java, Python or shell runtime required. Files and directories only: no script hooks or remote execution.
 
-Version **4.1.3** warns and continues for saved commands in shared folders, and skips `.ssync` files during transfers with a warning. Version **4.1.2** accepts shared-writable directories by default and adds the optional local `sole-owned` policy. Version **4.1.1** includes security hardening and a [cryptographic integration review](docs/CRYPTO_REVIEW.md). Version **4.1.0** added backup server/client modes to native SSync 4, which replaces Java SSync 3.3. The command interface is retained; the new wire protocol requires version 4 on both endpoints. Initial supported release target is **Linux x86_64, kernel 5.6+**, with a static musl binary. Other platforms are not claimed tested or supported. Procfs and case-sensitive local Linux filesystems are required; casefold, network/FUSE and pseudo filesystems fail closed.
+Version **4.1.4** reproduces source read/write/execute permissions, adds file-mode overrides and topic help, describes source links as inert `.ssynclink` files, and copies `.ssync` configurations as `.ssyncbak`. Source `.ssync-state` and the configured password file are excluded. **Update both endpoints and restart listeners**: 4.1.4 refuses transfers with earlier versions before modifying transfer data.
+
+Supported release target: **Linux x86_64, kernel 5.6+**, with a static musl binary. Procfs and case-sensitive local Linux filesystems are required; casefold, network/FUSE and pseudo filesystems fail closed. Other platforms are not supported. Native SSync 4 replaces Java SSync 3.3; the command interface is retained, with an incompatible wire protocol. Earlier release changes and security reviews are in [CHANGELOG.md](CHANGELOG.md) and [docs/CRYPTO_REVIEW.md](docs/CRYPTO_REVIEW.md).
+
+Transfers reproduce source read/write/execute permissions on files and directories, including existing files with identical contents. `merge` and backup transfers also reproduce the source directory's mode on the destination root. File ownership, groups, ACLs, and special mode bits (setuid, setgid, sticky) are not copied. Private resume data stays private. Earlier releases create changed/new files as `0600` and new directories as `0700`; rerun a transfer with both peers updated to repair selected items' modes.
+
+## Link descriptions and permission overrides
+
+Source symbolic links are represented by a regular text file named `X.ssynclink`. SSync never follows the link or creates a destination symlink. Relative, absolute, broken and directory links are all described, for example:
+
+```text
+type: softlink
+path: "A/B/C"
+```
+
+The description includes a quoted command for manually recreating the link from the directory containing the description. Non-UTF-8 targets use `path_hex` and byte-preserving recreation instructions. Target paths are data, not paths SSync opens. Hard-linked regular files are copied as independent files and get `.ssynclink` descriptions too: `type: hardlink`, a known partner path relative to the transfer destination root, and manual instructions. If no other name for the inode is selected, `path: null` explicitly records that the other name is unknown; the file's contents are still copied. Descriptions default to `0600` because link targets can contain private paths. Existing destination links remain protected against following or modifying outside files; special files such as FIFOs still fail clearly.
+
+A source filename that collides with a generated description causes preflight failure, before changing destination data. Rename the conflicting source entry or exclude it with `skip:`. Filters can exclude the original link or its generated description. Descriptions participate in normal verification, resume, dry runs and mirror cleanup. A directory mirror removes stale descriptions when links disappear or become regular files; `nodelete` retains extras. Individual file/link selections do not delete neighbouring entries.
+
+By default, source read/write/execute bits are reproduced. Override **every copied file's** permissions with an octal mode before the action:
+
+```bash
+ssync --chmod 644 force put host:1500 ./docs
+ssync chmod:600 force put host:1500 ./private
+ssync --permissions 755 force get host:1500 ./downloads
+```
+
+`chmod:MODE`, `permissions:MODE`, `--chmod MODE` and `--permissions MODE` are equivalent (`--chmod=MODE` and `--permissions=MODE` also work). Modes range from `000` to `777`, optionally with a leading zero; special bits and symbolic expressions are rejected. Put the qualifier on transfer lines in saved `.ssync` files, or before `backup-client` / `backup-server`. Either peer may set an override; the receiving peer's setting wins. It applies to new, replaced and content-identical regular files and `.ssynclink` descriptions. Directories retain source modes so file mode `600` does not make folders inaccessible. A dry run changes no permissions. Both endpoints must run 4.1.4 or later, with listeners restarted after upgrading.
 
 ## Usage
+
+SSync keeps commands, examples and qualifiers in `ssync --help`.
+Use `ssync --help permissions` for default modes and `chmod:MODE`, or select
+`links`, `mirroring`, `passwords`, `config`, `backup` or `compatibility` for details.
+`ssync help <topic>` also works.
 
 ```text
 ssync [qualifiers] <action> <location> [files or folders]
@@ -29,7 +61,7 @@ ssync get server:1500 ./downloads
 ssync ?                        # interactive guidance
 ```
 
-Receiver directories must already exist. Without `merge`, items retain their source basenames. Receiver `merge` transfers a single directory's contents into the receiver root. Qualifiers precede the action: `merge`, `nodelete`, `dryrun`, `verify`, `verbose`, `force`/`noprompt`, `sole-owned`, `skip:substring`.
+Receiver directories must already exist. Without `merge`, items retain their source basenames. Receiver `merge` transfers a single directory's contents into the receiver root. Qualifiers precede the action: `merge`, `nodelete`, `dryrun`, `verify`, `verbose`, `force`/`noprompt`, `sole-owned`, `skip:substring`, `--chmod MODE` (or `chmod:MODE`).
 
 Shared-writable source and destination directories are accepted by default (since 4.1.2). Add `sole-owned` **on either side independently** to reject group/other-writable local roots and traversed directories:
 
@@ -42,9 +74,9 @@ ssync sole-owned backup-server /opt/backup-server.ssync
 
 `sole-owned` retains the earlier directory policy: sources may belong to another user, while destination directories must be owned by the current user or root, with trusted ancestry (sticky shared ancestors such as `/tmp` are allowed). It does not require mode 700 or prohibit other users from reading. The option applies locally and is never imposed by the remote peer. Ordinary `.ssync` transfer lines also accept it. Default shared destinations trust local users who can modify the tree: noncooperating writers can rename entries or change files during a transfer, and advisory locks do not stop them. Link/path/mount containment, file-change checks, and private resume-state checks still apply. Installation, password-file and backup-configuration paths retain their separate ownership/permission protections.
 
-**The default mirrors selected directories, including deletion of extra entries in those scopes.** Use `nodelete` to retain extras. Single-file transfers never delete neighbouring files. Filters protect matching paths from transfer and deletion. Transfers always skip names ending in `.ssync` (case-insensitive) with a warning and continue other files; existing destination configurations are preserved during mirror cleanup. Directories with this suffix and their contents are also protected to prevent file/directory replacement. This applies to ordinary and backup transfers. Update the receiving peer for mirror-cleanup protection; use `nodelete` when receiving with an older version. Deletion requires a complete verified manifest; `dryrun` writes neither payload nor staging files. `force` skips the transfer prompt; it cannot override safety/authentication checks.
+**The default mirrors selected directories, including deletion of extra entries in those scopes.** Use `nodelete` to retain extras. Single-file transfers never delete neighbouring files. Filters protect matching paths from transfer and deletion. Version 4.1.4 copies source names ending in `.ssync` (case-insensitive) as `.ssyncbak`: `job.ssync` becomes `job.ssyncbak`, retaining its contents and normal file-mode rules. This applies to ordinary transfers, explicit file selections and backups; directory components with that suffix are renamed too. Existing destination `.ssync` paths remain protected from replacement and mirror deletion. Projected-name collisions (for example both `job.ssync` and `job.ssyncbak`) fail before copying. Filters apply to original and projected names. Source `.ssync-state` entries are always ignored without inspecting their ownership or contents; the name is reserved and must not hold user data. Receiving SSync still requires its own resume state to be private. Deletion requires a complete verified manifest; `dryrun` writes neither payload nor staging files. `force` skips the transfer prompt; it cannot override safety/authentication checks.
 
-Passwords require 16+ Unicode characters; generated passwords use 24 uniformly sampled Base58 characters, displayed as six groups of four. Credentials do not expire, and each connection derives fresh keys. Precedence is nonempty `SSYNC_PASSWORD`, then `SSYNC_PASSWORD_FILE`, then `SSYNC_PASSWORD_FD`, then `password@location`, then hidden connector prompt/generated listener credential. Inline credentials may be visible in process listings/history. A password file must be private and owned by the current user; one final LF/CRLF is file framing, while descriptor input is preserved exactly. Maximum secret size is 4096 UTF-8 bytes.
+Passwords require 16+ Unicode characters; generated passwords use 24 uniformly sampled Base58 characters, displayed as six groups of four. Credentials do not expire, and each connection derives fresh keys. Precedence is nonempty `SSYNC_PASSWORD`, then `SSYNC_PASSWORD_FILE`, then `SSYNC_PASSWORD_FD`, then `password@location`, then hidden connector prompt/generated listener credential. Inline credentials may be visible in process listings/history. A password file must be private and owned by the current user; one final LF/CRLF is file framing, while descriptor input is preserved exactly. Maximum secret size is 4096 UTF-8 bytes. The configured `SSYNC_PASSWORD_FILE` may have any filename. Ordinary and backup scans exclude that file and its hard-link aliases; local receiver guards also preserve it against replacement, permission changes and mirror deletion. This works even when a higher-priority password input is used. Files containing passwords that are not identified by this setting cannot be detected automatically: keep those outside transfer trees or use `skip:`. `.ssyncbak` copies retain configuration contents, which may contain inline credentials; protect their access accordingly.
 
 `.ssync` files contain quoted declarative transfer commands, one per line, and run concurrently. Only transfer operations are permitted; no shell expansion or execution. A shared-writable folder containing an ordinary `.ssync` configuration produces one warning and the commands still run. Use `ssync sole-owned file.ssync` to require trusted configuration directories and enable `sole-owned` for every local transfer in the file. Configuration files themselves must still be owned by the current user or root and cannot be group/other writable. Use `force` when unattended. `version`, `licenses`, `hash <directory>`, `deep <file>`, `scan <file>` and single-file inspection are local diagnostics. Hash output is BLAKE3 and intentionally differs from Java output.
 
@@ -83,7 +115,7 @@ Each password selects its bay on each server. The client cannot choose a server 
 
 The server stays running; the client performs one cycle and exits without prompting. Up to four uploads run concurrently, with independent success/failure reporting. Any failed source/server pair gives a nonzero exit status after the other pairs finish. Run it from your scheduler for recurring backups. Same-bay simultaneous uploads report busy; retry later. Different bays can update concurrently. Config changes require a restart/rerun. Environment passwords do not override credentials in backup files.
 
-Both endpoints need **4.1+ for backup mode**. Ordinary transfer commands retain the 4.0 protocol. Backup mode accepts uploads only: no network restoration, remote execution, Restic integration or at-rest encryption. Retrieve files with normal administrator server access. Blank/comment lines are ignored, `=` splits at its first occurrence, and IPv6 servers use `@[address][:port]`. Configuration limits are 32 servers and 32 sources/bays. Passwords must be unique within each file; server bay directories must not overlap.
+Ordinary and backup transfers require **4.1.4+ on both endpoints** for permission preservation; restart listeners after upgrading. Backup mode accepts uploads only: no network restoration, remote execution, Restic integration or at-rest encryption. Retrieve files with normal administrator server access. Blank/comment lines are ignored, `=` splits at its first occurrence, and IPv6 servers use `@[address][:port]`. Configuration limits are 32 servers and 32 sources/bays. Passwords must be unique within each file; server bay directories must not overlap.
 
 Current inherited safety limits include **16 GiB per file, 10,000 manifest entries per source, and 16 GiB of private partial state per bay**. Oversized backups fail clearly rather than silently omitting files.
 

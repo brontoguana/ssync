@@ -2,6 +2,7 @@ use crate::{
     auth::Channel,
     cli::Transfer,
     fs::{self, Root},
+    links::{self, Plan},
 };
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -9,6 +10,7 @@ use std::{
     collections::BTreeSet,
     fs::File,
     io::{Read, Seek, SeekFrom, Write},
+    os::unix::fs::MetadataExt,
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -25,6 +27,9 @@ pub enum Message {
         merge: bool,
         dryrun: bool,
         skip: Vec<String>,
+        #[serde(default)]
+        permissions: bool,
+        chmod: Option<u32>,
     },
     Begin {
         roots: Vec<(String, bool)>,
@@ -37,6 +42,7 @@ pub enum Message {
     },
     Directory {
         path: String,
+        mode: u32,
     },
     File {
         path: String,
@@ -44,6 +50,7 @@ pub enum Message {
         hash: String,
         modified_secs: i64,
         modified_nanos: u32,
+        mode: u32,
     },
     Need {
         skip: bool,
@@ -106,7 +113,7 @@ fn selected(path: &Path, sole_owned: bool) -> Result<Selected> {
         }),
         Err(directory_error) => {
             let parent = Root::with_policy(abs.parent().context("missing parent")?, sole_owned)?;
-            let meta = parent.metadata(&name)?.context("source does not exist")?;
+            let meta = parent.source_metadata(&name)?;
             if meta.is_dir() {
                 return Err(directory_error);
             }
@@ -199,24 +206,33 @@ fn send(t: &Transfer, c: &mut Channel, connector: bool, stop: &AtomicBool) -> Re
         merge,
         dryrun,
         skip: remote_skip,
+        permissions,
+        chmod: remote_chmod,
     } = c.recv()?
     else {
         bail!("expected receiver options")
     };
+    ensure!(
+        permissions,
+        "permission preservation requires updated SSync on both machines; receiver is too old"
+    );
+    if let Some(mode) = remote_chmod {
+        fs::validate_mode(mode)?;
+    }
+    let chmod = remote_chmod.or(t.options.chmod);
     check_filters(&remote_skip)?;
     let mut skip = t.options.skip.clone();
     skip.extend(remote_skip);
     ensure!(skip.len() <= 64, "too many combined filters");
-    let sources = t
-        .paths
-        .iter()
-        .map(|p| selected(p, t.options.sole_owned))
-        .collect::<Result<Vec<_>>>()?;
-    ensure!(
-        !sources.is_empty() && sources.len() <= 128,
-        "source selection limit"
-    );
-    if merge {
+    let mut sources = Vec::new();
+    for path in &t.paths {
+        let path = fs::absolute(path)?;
+        if !path.components().any(|c| c.as_os_str() == fs::STATE) {
+            sources.push(selected(&path, t.options.sole_owned)?);
+        }
+    }
+    ensure!(sources.len() <= 128, "source selection limit");
+    if merge && !sources.is_empty() {
         ensure!(
             sources.len() == 1 && sources[0].is_dir,
             "merge requires one source directory"
@@ -226,8 +242,39 @@ fn send(t: &Transfer, c: &mut Channel, connector: bool, stop: &AtomicBool) -> Re
     for s in &sources {
         ensure!(names.insert(s.name.clone()), "duplicate source basename");
     }
+    let mut plan = Plan::default();
+    let omitted = |p: &str| filtered(p, &skip);
+    for s in &sources {
+        plan.scan(
+            &s.root,
+            &s.path,
+            if merge { "" } else { &s.name },
+            &omitted,
+            stop,
+        )?;
+    }
+    plan.finish()?;
+    let mut roots = Vec::new();
+    for s in &sources {
+        let name = links::project(&s.name);
+        if s.root.password_path(&s.path)? {
+            continue;
+        }
+        if s.root.source_metadata(&s.path)?.is_symlink() {
+            roots.push((links::sidecar(&name), false));
+        } else {
+            roots.push((name.clone(), s.is_dir));
+            if !merge && !s.is_dir && plan.descriptions.contains_key(&name) {
+                roots.push((links::sidecar(&name), false));
+            }
+        }
+    }
+    ensure!(
+        roots.len() <= 128,
+        "source selection including link descriptions exceeds 128 roots"
+    );
     c.send(&Message::Begin {
-        roots: sources.iter().map(|s| (s.name.clone(), s.is_dir)).collect(),
+        roots,
         skip: t.options.skip.clone(),
         dryrun: t.options.dryrun,
         nodelete: t.options.nodelete,
@@ -244,6 +291,8 @@ fn send(t: &Transfer, c: &mut Channel, connector: bool, stop: &AtomicBool) -> Re
             &skip,
             dryrun || t.options.dryrun,
             t.options.verbose,
+            chmod,
+            &plan,
             c,
             &mut stats,
             &mut count,
@@ -279,53 +328,65 @@ fn send_entry(
     skip: &[String],
     dry: bool,
     verbose: bool,
+    chmod: Option<u32>,
+    plan: &Plan,
     c: &mut Channel,
     stats: &mut Stats,
     count: &mut usize,
     stop: &AtomicBool,
 ) -> Result<()> {
     cancelled(stop)?;
-    if protected_config(target) {
-        warn_config(target);
+    if root.password_path(source)? {
         stats.skipped += 1;
         return Ok(());
     }
     if !target.is_empty() && filtered(target, skip) {
         return Ok(());
     }
-    let meta = root.metadata(source)?.context("source disappeared")?;
+    let original_target = target;
+    let projected = links::project(target);
+    let target = projected.as_str();
+    if !target.is_empty() && filtered(target, skip) {
+        return Ok(());
+    }
+    let meta = root.source_metadata(source)?;
     let before = fs::identity(&meta);
-    if meta.is_dir() {
-        if !target.is_empty() {
-            c.send(&Message::Directory {
-                path: target.into(),
-            })?;
-            expect_ack(c)?;
-            *count += 1;
+    if meta.is_symlink() {
+        let name = links::sidecar(target);
+        if filtered(&name, skip) {
+            return Ok(());
         }
+        send_description(root, source, target, chmod, plan, dry, c, stats, count)?;
+    } else if meta.is_dir() {
+        c.send(&Message::Directory {
+            path: target.into(),
+            mode: meta.mode() & 0o777,
+        })?;
+        expect_ack(c)?;
+        *count += 1;
         for name in root.list(source)? {
             let source = if source.is_empty() {
                 name.clone()
             } else {
                 format!("{source}/{name}")
             };
-            let target = if target.is_empty() {
+            let target = if original_target.is_empty() {
                 name
             } else {
-                format!("{target}/{name}")
+                format!("{original_target}/{name}")
             };
             send_entry(
-                root, &source, &target, skip, dry, verbose, c, stats, count, stop,
+                root, &source, &target, skip, dry, verbose, chmod, plan, c, stats, count, stop,
             )?;
         }
         ensure!(
-            root.metadata(source)?.as_ref().map(fs::identity) == Some(before),
+            fs::identity(&root.source_metadata(source)?) == before,
             "source directory changed during enumeration"
         );
     } else {
-        fs::regular(&meta)?;
+        ensure!(meta.is_file(), "source is not a regular file");
         ensure!(meta.len() <= MAX_FILE, "file exceeds 16 GiB limit");
-        let mut file = root.read(source)?;
+        let mut file = root.read_source(source)?;
         ensure!(
             fs::identity(&file.metadata()?) == before,
             "source changed before opening"
@@ -337,6 +398,7 @@ fn send_entry(
             hash: hash.clone(),
             modified_secs: std::os::unix::fs::MetadataExt::mtime(&meta),
             modified_nanos: std::os::unix::fs::MetadataExt::mtime_nsec(&meta) as u32,
+            mode: chmod.unwrap_or(meta.mode() & 0o777),
         })?;
         let Message::Need { skip: whole_skip } = c.recv()? else {
             bail!("expected block request")
@@ -444,7 +506,7 @@ fn send_entry(
                 }
                 Ok(())
             })?;
-            let mut reopened = root.read(source)?;
+            let mut reopened = root.read_source(source)?;
             ensure!(
                 fs::digest(&mut reopened)?.to_hex().as_str() == hash,
                 "source content changed during transfer"
@@ -454,8 +516,87 @@ fn send_entry(
             stats.files += 1;
         }
         *count += 1;
+        if plan.descriptions.contains_key(target) {
+            send_description(root, source, target, chmod, plan, dry, c, stats, count)?;
+        }
     }
     ensure!(*count <= fs::MAX_ENTRIES, "manifest entry limit");
+    Ok(())
+}
+#[allow(clippy::too_many_arguments)]
+fn send_description(
+    root: &Root,
+    source: &str,
+    target: &str,
+    chmod: Option<u32>,
+    plan: &Plan,
+    dry: bool,
+    c: &mut Channel,
+    stats: &mut Stats,
+    count: &mut usize,
+) -> Result<()> {
+    let description = plan
+        .descriptions
+        .get(target)
+        .context("source link changed since planning")?;
+    ensure!(
+        fs::identity(&root.source_metadata(source)?) == description.identity,
+        "source link changed since planning"
+    );
+    let path = links::sidecar(target);
+    let bytes = &description.bytes;
+    ensure!(bytes.len() < BLOCK, "link description too large");
+    let hash = blake3::hash(bytes).to_hex().to_string();
+    let meta = root.source_metadata(source)?;
+    eprintln!("SSync: describing source link {:?} as {:?}", target, path);
+    c.send(&Message::File {
+        path,
+        size: bytes.len() as u64,
+        hash: hash.clone(),
+        modified_secs: meta.mtime(),
+        modified_nanos: meta.mtime_nsec() as u32,
+        mode: chmod.unwrap_or(0o600),
+    })?;
+    let Message::Need { skip } = c.recv()? else {
+        bail!("expected link description request")
+    };
+    if skip {
+        stats.skipped += 1;
+    } else {
+        c.send(&Message::Block {
+            offset: 0,
+            len: bytes.len(),
+            hash: hash.clone(),
+        })?;
+        let Message::Want { yes, reused } = c.recv()? else {
+            bail!("expected link description comparison")
+        };
+        ensure!(
+            !(yes && reused) && (yes || reused || dry),
+            "invalid link description comparison"
+        );
+        c.send(&Message::WindowEnd {})?;
+        if yes {
+            ensure!(!dry, "dry run requested link description payload");
+            c.send_bytes(bytes)?;
+            stats.content_bytes += bytes.len() as u64;
+            expect_ack(c)?;
+        } else if reused {
+            stats.reused_bytes += bytes.len() as u64;
+        }
+        ensure!(
+            fs::identity(&root.source_metadata(source)?) == description.identity,
+            "source link changed during transfer"
+        );
+        c.send(&Message::EndFile { hash })?;
+        expect_ack(c)?;
+        stats.files += 1;
+    }
+    ensure!(
+        fs::identity(&root.source_metadata(source)?) == description.identity,
+        "source link changed during transfer"
+    );
+    *count += 1;
     Ok(())
 }
 fn expect_ack(c: &mut Channel) -> Result<()> {
@@ -471,6 +612,8 @@ fn receive(t: &Transfer, c: &mut Channel, connector: bool, stop: &AtomicBool) ->
         merge: t.options.merge,
         dryrun: t.options.dryrun,
         skip: t.options.skip.clone(),
+        permissions: true,
+        chmod: t.options.chmod,
     })?;
     let Message::Begin {
         roots,
@@ -481,10 +624,7 @@ fn receive(t: &Transfer, c: &mut Channel, connector: bool, stop: &AtomicBool) ->
     else {
         bail!("expected selected roots")
     };
-    ensure!(
-        !roots.is_empty() && roots.len() <= 128,
-        "source selection limit"
-    );
+    ensure!(roots.len() <= 128, "source selection limit");
     check_filters(&remote_skip)?;
     let mut top = BTreeSet::new();
     for (name, _) in &roots {
@@ -494,7 +634,7 @@ fn receive(t: &Transfer, c: &mut Channel, connector: bool, stop: &AtomicBool) ->
             "invalid source root"
         );
     }
-    if t.options.merge {
+    if t.options.merge && !roots.is_empty() {
         ensure!(
             roots.len() == 1 && roots[0].1,
             "merge requires a single directory"
@@ -512,79 +652,112 @@ fn receive(t: &Transfer, c: &mut Channel, connector: bool, stop: &AtomicBool) ->
     let mut stats = Stats::default();
     let mut seen = BTreeSet::new();
     let mut path_bytes = 0usize;
-    loop {
-        cancelled(stop)?;
-        let msg = c.recv()?;
-        match msg {
-            Message::Directory { path } => {
-                authorize(&path, &roots, t.options.merge, &skip)?;
-                ensure!(seen.insert(path.clone()), "duplicate entry");
-                path_bytes += path.len();
-                ensure!(path_bytes <= 8 * 1024 * 1024, "manifest path-byte limit");
-                if protected_config(&path) {
-                    warn_config(&path);
-                    stats.skipped += 1;
-                } else if t.options.dryrun {
-                    println!("Would create directory {:?}", path);
-                    if let Some(m) = root.metadata(&path)? {
-                        ensure!(m.is_dir(), "directory/file conflict");
+    let mut directories = Vec::new();
+    let result = (|| -> Result<()> {
+        loop {
+            cancelled(stop)?;
+            let msg = c.recv()?;
+            match msg {
+                Message::Directory { path, mode } => {
+                    if path.is_empty() {
+                        ensure!(
+                            t.options.merge && roots.len() == 1 && roots[0].1,
+                            "root permissions require a selected merge directory"
+                        );
+                    } else {
+                        authorize(&path, &roots, t.options.merge, &skip)?;
                     }
-                } else {
-                    root.mkdirs(&path)?;
+                    root.validate_directory_mode(mode)?;
+                    ensure!(seen.insert(path.clone()), "duplicate entry");
+                    path_bytes += path.len();
+                    ensure!(path_bytes <= 8 * 1024 * 1024, "manifest path-byte limit");
+                    if root.password_path(&path)? || protected_config(&path) {
+                        if protected_config(&path) {
+                            warn_config(&path);
+                        }
+                        stats.skipped += 1;
+                    } else if t.options.dryrun {
+                        println!("Would create directory {:?}", path);
+                        if let Some(m) = root.metadata(&path)? {
+                            ensure!(m.is_dir(), "directory/file conflict");
+                        }
+                    } else {
+                        root.mkdirs(&path)?;
+                        directories.push(root.prepare_directory_mode(&path, mode)?);
+                    }
+                    c.send(&Message::Ack {})?;
                 }
-                c.send(&Message::Ack {})?;
-            }
-            Message::File {
-                path,
-                size,
-                hash,
-                modified_secs,
-                modified_nanos,
-            } => {
-                authorize(&path, &roots, t.options.merge, &skip)?;
-                ensure!(seen.insert(path.clone()), "duplicate entry");
-                path_bytes += path.len();
-                ensure!(path_bytes <= 8 * 1024 * 1024, "manifest path-byte limit");
-                check_hash(&hash)?;
-                ensure!(size <= MAX_FILE, "file size limit");
-                receive_file(
-                    &root,
-                    &path,
+                Message::File {
+                    path,
                     size,
-                    &hash,
-                    (modified_secs, modified_nanos),
-                    t,
-                    c,
-                    &mut stats,
-                    stop,
-                )?;
+                    hash,
+                    modified_secs,
+                    modified_nanos,
+                    mode,
+                } => {
+                    authorize(&path, &roots, t.options.merge, &skip)?;
+                    ensure!(seen.insert(path.clone()), "duplicate entry");
+                    path_bytes += path.len();
+                    ensure!(path_bytes <= 8 * 1024 * 1024, "manifest path-byte limit");
+                    check_hash(&hash)?;
+                    ensure!(size <= MAX_FILE, "file size limit");
+                    receive_file(
+                        &root,
+                        &path,
+                        size,
+                        &hash,
+                        (modified_secs, modified_nanos),
+                        mode,
+                        t,
+                        c,
+                        &mut stats,
+                        stop,
+                    )?;
+                }
+                Message::Done { entries } => {
+                    ensure!(entries == seen.len(), "incomplete manifest");
+                    break;
+                }
+                _ => bail!("unexpected transfer operation"),
             }
-            Message::Done { entries } => {
-                ensure!(entries == seen.len(), "incomplete manifest");
-                break;
+            ensure!(seen.len() <= fs::MAX_ENTRIES, "manifest entry limit");
+        }
+        cancelled(stop)?;
+        if !roots.is_empty() && !t.options.nodelete && !t.options.dryrun {
+            // Complete verified manifest is mandatory before any deletion. Scopes fixed by selected roots.
+            let scopes: Vec<String> = if t.options.merge {
+                vec![String::new()]
+            } else {
+                roots
+                    .iter()
+                    .filter(|(_, d)| *d)
+                    .map(|(n, _)| n.clone())
+                    .collect()
+            };
+            for scope in scopes {
+                delete_extras(&root, &scope, &seen, &skip, &mut stats, stop)?;
             }
-            _ => bail!("unexpected transfer operation"),
         }
-        ensure!(seen.len() <= fs::MAX_ENTRIES, "manifest entry limit");
-    }
-    cancelled(stop)?;
-    if !t.options.nodelete && !t.options.dryrun {
-        // Complete verified manifest is mandatory before any deletion. Scopes fixed by selected roots.
-        let scopes: Vec<String> = if t.options.merge {
-            vec![String::new()]
-        } else {
-            roots
-                .iter()
-                .filter(|(_, d)| *d)
-                .map(|(n, _)| n.clone())
-                .collect()
-        };
-        for scope in scopes {
-            delete_extras(&root, &scope, &seen, &skip, &mut stats, stop)?;
+        if t.options.verify {
+            println!("Directory Verification Hash: {}", tree_hash(&root, "")?);
+        }
+        Ok(())
+    })();
+    // Finalize children before parents, including when a later file fails. Keep
+    // directories writable until mirror cleanup and verification have finished.
+    directories.sort_by_key(|d| {
+        std::cmp::Reverse(d.path.matches('/').count() + usize::from(!d.path.is_empty()))
+    });
+    let mut mode_error = None;
+    for directory in directories {
+        if let Err(error) = root.finish_directory_mode(&directory) {
+            eprintln!("Cannot preserve directory permissions: {error:#}");
+            mode_error.get_or_insert(error);
         }
     }
-    if t.options.verify {
-        println!("Directory Verification Hash: {}", tree_hash(&root, "")?);
+    result?;
+    if let Some(error) = mode_error {
+        return Err(error);
     }
     c.send(&Message::Finished {
         stats: stats.clone(),
@@ -593,6 +766,7 @@ fn receive(t: &Transfer, c: &mut Channel, connector: bool, stop: &AtomicBool) ->
 }
 fn authorize(path: &str, roots: &[(String, bool)], merge: bool, skip: &[String]) -> Result<()> {
     fs::valid(path)?;
+    ensure!(!roots.is_empty(), "entry without a selected source root");
     ensure!(!filtered(path, skip), "entry violates protected filter");
     if !merge {
         ensure!(
@@ -611,17 +785,22 @@ fn receive_file(
     size: u64,
     hash: &str,
     modified: (i64, u32),
+    mode: u32,
     t: &Transfer,
     c: &mut Channel,
     stats: &mut Stats,
     stop: &AtomicBool,
 ) -> Result<()> {
+    fs::validate_mode(mode)?;
+    let mode = t.options.chmod.unwrap_or(mode);
     ensure!(
         (-62_135_596_800..=253_402_300_799).contains(&modified.0) && modified.1 < 1_000_000_000,
         "unsupported modification timestamp"
     );
-    if protected_config(path) {
-        warn_config(path);
+    if root.password_path(path)? || protected_config(path) {
+        if protected_config(path) {
+            warn_config(path);
+        }
         stats.skipped += 1;
         c.send(&Message::Need { skip: true })?;
         return Ok(());
@@ -632,7 +811,19 @@ fn receive_file(
     }
     let expected = meta.as_ref().map(fs::identity);
     let mut old = if meta.is_some() {
-        Some(root.read(path)?)
+        match root.read(path) {
+            Ok(file) => Some(file),
+            // An owner can replace a mode-000 file through its writable parent.
+            // It cannot be used for comparison; leave it intact until commit.
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied) =>
+            {
+                None
+            }
+            Err(error) => return Err(error),
+        }
     } else {
         None
     };
@@ -644,6 +835,9 @@ fn receive_file(
             root.metadata(path)?.as_ref().map(fs::identity) == expected,
             "destination changed during comparison"
         );
+        if !t.options.dryrun {
+            root.set_file_mode(path, f, &expected, mode)?;
+        }
         c.send(&Message::Need { skip: true })?;
         stats.skipped += 1;
         return Ok(());
@@ -820,6 +1014,9 @@ fn receive_file(
             "destination changed during transfer"
         );
         root.commit(state, &id, path, &expected)?;
+        // Resume files remain 0600 until the verified inode is published.
+        let committed = Some(fs::identity(&f.metadata()?));
+        root.set_file_mode(path, f, &committed, mode)?;
     }
     stats.files += 1;
     c.send(&Message::Ack {})?;
@@ -869,7 +1066,7 @@ fn delete_extras(
         warn_config(path);
         return Ok(());
     }
-    if filtered(path, skip) {
+    if filtered(path, skip) || root.password_path(path)? {
         return Ok(());
     }
     let Some(m) = root.metadata(path)? else {
@@ -899,9 +1096,12 @@ fn delete_extras(
 }
 pub fn tree_hash(root: &Root, path: &str) -> Result<String> {
     fn walk(root: &Root, path: &str, h: &mut blake3::Hasher, count: &mut usize) -> Result<()> {
+        if root.password_path(path)? {
+            return Ok(());
+        }
         *count += 1;
         ensure!(*count <= fs::MAX_ENTRIES, "hash entry limit");
-        let m = root.metadata(path)?.context("hash entry missing")?;
+        let m = root.source_metadata(path)?;
         h.update(&(path.len() as u64).to_be_bytes());
         h.update(path.as_bytes());
         h.update(&[u8::from(m.is_dir())]);
@@ -918,8 +1118,11 @@ pub fn tree_hash(root: &Root, path: &str) -> Result<String> {
                     count,
                 )?;
             }
+        } else if m.is_symlink() {
+            h.update(b"softlink");
+            h.update(&root.source_link(path)?);
         } else {
-            let mut f = root.read(path)?;
+            let mut f = root.read_source(path)?;
             h.update(&m.len().to_be_bytes());
             h.update(fs::digest(&mut f)?.as_bytes());
         }

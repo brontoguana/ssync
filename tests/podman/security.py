@@ -40,7 +40,7 @@ subprocess.Popen(['python3','/app/proxy.py','40402','40401',sys.argv[1],sys.argv
 
 
 def main():
-    lab.status()
+    app.setup(app.BINARY)
     for peer in (A,B):
         lab.podman('cp',str(app.ROOT/'target/x86_64-unknown-linux-musl/release/examples/adversary'),peer+':/app/adversary')
         lab.podman('cp',str(Path(__file__).with_name('proxy.py')),peer+':/app/proxy.py')
@@ -73,21 +73,21 @@ with socket.create_connection((sys.argv[1],40401),timeout=3) as s:s.sendall(byte
 ''',IP,packet)
         assert app.wait(job)['code']!=0;unchanged(before,dest);app.record('unauthenticated malformed handshake',packet=packet)
     # Authenticated malicious messages cannot broaden root or invoke commands.
-    for mode,path in [('path','../outside'),('path','/work/app-tests/outside'),('path','source/../../outside'),('path','source\\x'),('path','source/.ssync-state/x'),('unknown',''),('duplicate',''),('size','source/x'),('incomplete',''),('block','source/x'),('digest','source/x')]:
-        job=server(dest);before=app.snapshot(B,dest)
+    for mode,path in [('path','../outside'),('path','/work/app-tests/outside'),('path','source/../../outside'),('path','source\\x'),('path','source/.ssync-state/x'),('unknown',''),('mode','source'),('file-mode','source/x'),('duplicate',''),('size','source/x'),('incomplete',''),('block','source/x'),('digest','source/x'),('empty-roots','')]:
+        job=server(dest,quals=['merge'] if mode=='empty-roots' else []);before=app.snapshot(B,dest)
         result=json.loads(app.execute(A,'''import subprocess,os,json,sys
 env=os.environ.copy();env['SSYNC_PASSWORD']=sys.argv[1]
 r=subprocess.run(['/app/adversary',sys.argv[2],sys.argv[3],sys.argv[4]],capture_output=True,text=True,env=env,timeout=20)
 print(json.dumps({'code':r.returncode,'out':r.stdout,'err':r.stderr}))
 ''',PASSWORD,f'{IP}:{PORT}',mode,path))
         remote=app.wait(job);assert remote['code']!=0,(mode,path,remote)
-        expected={'path':'unsafe','unknown':'malformed or unknown','duplicate':'duplicate entry','size':'file size limit','incomplete':'incomplete manifest','block':'invalid block range','digest':'block content verification failed'}[mode]
+        expected={'path':'unsafe','unknown':'malformed or unknown','mode':'unsupported permission bits','file-mode':'unsupported permission bits','duplicate':'duplicate entry','size':'file size limit','incomplete':'incomplete manifest','block':'invalid block range','digest':'block content verification failed','empty-roots':'root permissions require a selected merge directory'}[mode]
         assert result['code']==0 and 'Rejected' in result['out'] and expected in remote['err'],(mode,result,remote)
         # Directory creation before malformed final state is permitted; existing file bytes must survive.
         after=app.snapshot(B,dest)
         for key,value in before.items():assert after.get(key)==value,(mode,key)
         app.record('adversarial protocol',mode=mode,path=path,server_error=remote['err'])
-    # Filesystem links/special files from source are rejected, outside canary unchanged.
+    # Source links are described/copied without modifying the original; special files fail.
     for kind in ['symlink','hardlink','fifo']:
         path=f'{BASE}/bad-{kind}';mkdir(A,path)
         app.execute(A,'''import os,pathlib,sys
@@ -96,7 +96,20 @@ if kind=='symlink':os.symlink('/work/app-tests/outside/canary',p/'attack')
 elif kind=='hardlink':os.link('/work/app-tests/outside/canary',p/'attack')
 else:os.mkfifo(p/'attack')
 ''',path,kind)
-        job=server(dest);result=put(path);assert result['code']!=0,result;assert app.wait(job)['code']!=0;app.record('unsafe source rejected',kind=kind)
+        job=server(dest);result=put(path);remote=app.wait(job)
+        if kind=='fifo':
+            assert result['code']!=0 and remote['code']!=0,(result,remote)
+            app.record('special source rejected',kind=kind)
+        else:
+            app.stats(result);assert remote['code']==0,remote
+            app.execute(B,'''import pathlib,sys
+p=pathlib.Path(sys.argv[1]);kind=sys.argv[2]
+assert (p/'attack.ssynclink').is_file()
+assert not (p/'attack').is_symlink()
+if kind=='hardlink':assert (p/'attack').read_bytes()==b'CANARY' and (p/'attack').stat().st_nlink==1
+else:assert not (p/'attack').exists() and 'type: softlink' in (p/'attack.ssynclink').read_text()
+''',dest+'/bad-'+kind,kind)
+            app.record('source link represented without following symlinks',kind=kind)
     # Private partial resumes after a measured interrupted transfer.
     resume_source=f'{BASE}/resume-source';app.fixture(A,resume_source,20_000_000)
     resume_dest=f'{BASE}/resume-dest';mkdir(B,resume_dest)

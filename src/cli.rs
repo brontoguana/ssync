@@ -1,5 +1,5 @@
 use crate::auth;
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use std::{
     io::{self, Write},
     path::PathBuf,
@@ -15,6 +15,7 @@ pub struct Options {
     pub verbose: bool,
     pub force: bool,
     pub sole_owned: bool,
+    pub chmod: Option<u32>,
     pub skip: Vec<String>,
 }
 #[derive(Clone)]
@@ -38,7 +39,7 @@ pub enum Command {
     Transfer(Transfer),
     Pwd,
     Version,
-    Help,
+    Help(&'static str),
     Guide,
     Diagnostic(String, PathBuf),
     Management(String),
@@ -125,7 +126,14 @@ pub fn parse(args: &[String], env: Option<&str>) -> Result<Command> {
         "command input exceeds limits"
     );
     if args.is_empty() {
-        return Ok(Command::Help);
+        return Ok(Command::Help(HELP));
+    }
+    if matches!(args[0].to_lowercase().as_str(), "--help" | "help") {
+        ensure!(args.len() <= 2, "use ssync --help [topic]");
+        return Ok(Command::Help(match args.get(1) {
+            Some(topic) => help_topic(topic)?,
+            None => HELP,
+        }));
     }
     if args.len() == 1 {
         match args[0].to_lowercase().as_str() {
@@ -139,7 +147,6 @@ pub fn parse(args: &[String], env: Option<&str>) -> Result<Command> {
             "licenses" | "--licenses" => return Ok(Command::Licenses),
             "version" | "--version" => return Ok(Command::Version),
             "?" => return Ok(Command::Guide),
-            "--help" | "help" => return Ok(Command::Help),
             "install" | "update" | "uninstall" => {
                 return Ok(Command::Management(args[0].to_lowercase()));
             }
@@ -178,6 +185,20 @@ pub fn parse(args: &[String], env: Option<&str>) -> Result<Command> {
             "verify" => o.verify = true,
             "verbose" => o.verbose = true,
             "force" | "noprompt" => o.force = true,
+            "--chmod" | "--permissions" | "chmod" | "permissions" => {
+                i += 1;
+                o.chmod = Some(parse_mode(
+                    args.get(i)
+                        .context("chmod requires an octal mode, e.g. 644")?,
+                )?);
+            }
+            _ if ["chmod:", "permissions:", "--chmod=", "--permissions="]
+                .iter()
+                .any(|prefix| args[i].to_lowercase().starts_with(prefix)) =>
+            {
+                let value = args[i].split_once([':', '=']).unwrap().1;
+                o.chmod = Some(parse_mode(value)?);
+            }
             _ if args[i].to_lowercase().starts_with("skip:") => {
                 ensure!(args[i].len() > 5, "empty skip filter");
                 o.skip.push(args[i][5..].to_string());
@@ -267,11 +288,231 @@ pub fn parse(args: &[String], env: Option<&str>) -> Result<Command> {
         password: Zeroizing::new(password),
     }))
 }
+fn parse_mode(value: &str) -> Result<u32> {
+    ensure!(
+        (value.len() == 3 || (value.len() == 4 && value.starts_with('0')))
+            && value.bytes().all(|b| (b'0'..=b'7').contains(&b)),
+        "chmod requires an octal rwx mode from 000 to 777, e.g. 600 or 0755"
+    );
+    Ok(u32::from_str_radix(value, 8)?)
+}
 pub const HELP: &str = concat!(
     "SSync v",
     env!("CARGO_PKG_VERSION"),
-    " — native file-only synchronization\n\nssync [merge nodelete dryrun verify verbose force sole-owned skip:substring] <put|get|offer|accept> <location> [paths...]\n\nput/offer send; get/accept receive. put/get once; offer/accept continuously.\nlocation: port, alias, host:port, host:alias, [IPv6]:port; optional password@ prefix.\nPassword precedence: SSYNC_PASSWORD > SSYNC_PASSWORD_FILE > SSYNC_PASSWORD_FD > inline > prompt/generated listener. Minimum 16 characters.\nReceiver directory must exist. Default layout includes source basenames; receiver merge strips one directory name.\nShared-writable local directories are accepted by default. sole-owned rejects group/other-writable local roots and traversed directories; receivers also check owner/ancestors. Set independently on either peer.\nDefault mirror deletion is confined to selected source directories; use nodelete to retain extras.\n\nssync [verbose sole-owned] backup-server [port] [file] (default 8425, /opt/backup-server.ssync)\nssync [nodelete dryrun verify verbose sole-owned skip:substring] backup-client [file] (default /opt/backup-client.ssync)\n\nssync pwd | version | licenses | ? | hash <dir> | deep <file> | scan <file> | [sole-owned] <file.ssync>\nsudo ssync install | update | uninstall\nNo script execution. Both peers require version 4. Linux kernel 5.6+ required.\n"
+    " — native file synchronization\n",
+    r#"
+Usage:
+  ssync [qualifiers] <action> <location> [files or folders]
+  ssync ?                         Interactive guidance
+  ssync --help                    Show this help
+  ssync --help <topic>            Show detailed topic help
+
+Actions:
+  offer                           Send files continuously
+  accept                          Receive uploads continuously
+  put                             Send files once
+  get                             Receive files once
+
+Locations (accept connections):
+  1500                            Listen on TCP port 1500
+  MyDocuments                     Listen on a port derived from this alias
+
+Locations (make a connection):
+  host:1500                       Connect to a host and TCP port
+  host:MyDocuments                Connect to a host and alias-derived port
+  [2001:db8::1]:1500              Connect using an IPv6 address
+
+  A host determines who connects; the action determines who sends.
+  offer/accept keep listening, or repeat connections when a host is given.
+  Local paths default to .; the receiving folder must already exist.
+
+Sample commands:
+  ssync offer MyDocuments ./docs   Offer docs under the alias MyDocuments
+  ssync get host:MyDocuments ./dl  Download into the existing folder dl
+  ssync accept 1500 ./uploads      Continuously receive into uploads
+  ssync force put host:1500 ./docs Upload docs without a confirmation prompt
+  ssync --chmod 644 put host:1500 ./docs
+                                  Upload with mode 644 on every copied file
+  ssync nodelete merge get host:MyDocuments ./dl
+                                  Merge contents into dl and retain extras
+
+Qualifiers (before the action):
+  merge                           Receive one folder's contents into the root
+  nodelete                        Keep extra destination entries
+  dryrun                          Preview without writing or changing modes
+  verify                          Print a final tree hash
+  verbose                         Show block comparisons and transfer details
+  force | noprompt                Skip the transfer confirmation prompt
+  skip:substring                  Protect matching paths from copy/deletion
+  sole-owned                      Reject local group/other-writable folders
+  --chmod MODE | chmod:MODE        Override all copied file modes, e.g. 600/755
+  --permissions MODE              Alias for --chmod; permissions:MODE also works
+
+Saved configurations and backups:
+  ssync commands.ssync            Run saved transfer commands concurrently
+  ssync backup-server [port] [file]
+  ssync backup-client [file]
+
+Special commands:
+  ssync pwd                       Print one generated password
+  ssync version                   Print the version
+  ssync licenses                  Print licence and dependency notices
+  ssync hash <folder>             Print a BLAKE3 tree hash
+  ssync deep <file>               Hash a file in 200,000-byte blocks
+  ssync scan <file>               Count file bytes
+  ssync <file>                    Inspect a local file (except .ssync)
+  sudo ssync install              Install system-wide
+  sudo ssync update               Check for and install the latest release
+  sudo ssync uninstall            Remove the owned installation
+
+Detailed help:
+  ssync --help permissions        Source modes and file mode overrides
+  ssync --help links              Link descriptions and recreation
+  ssync --help mirroring          Deletion, filters and local directory policy
+  ssync --help passwords          Password inputs and precedence
+  ssync --help config             Saved configurations and cron
+  ssync --help backup             Backup server/client usage
+  ssync --help compatibility      Platforms and endpoint versions
+
+  Linux x86_64, kernel 5.6+. Both peers need updated builds; restart listeners.
+"#
 );
+
+const HELP_PERMISSIONS: &str = r#"Permissions:
+  Default: reproduce source read/write/execute bits on files and folders.
+  New, replaced and content-identical files get source modes. New and
+  existing selected folders also get source modes, even without content
+  changes. Ownership, group, ACLs and special bits are not copied.
+
+  Override file permissions (qualifiers go before the action):
+    ssync chmod:600 force put host:1500 ./private
+    ssync --chmod 644 force put host:1500 ./docs
+    ssync --permissions 755 force get host:1500 ./downloads
+
+  Permission behaviour for items included in the transfer:
+    Destination item                     Default      chmod:600
+    -----------------------------------  -----------  -----------
+    New file                             Source mode  0600
+    Existing file, contents updated      Source mode  0600
+    Existing file, contents unchanged    Source mode  0600
+    New folder                           Source mode  Source mode
+    Existing folder, contents updated    Source mode  Source mode
+    Existing folder, contents unchanged  Source mode  Source mode
+
+  Source mode means the source item's read/write/execute permissions.
+
+  --chmod MODE, chmod:MODE, --permissions MODE and permissions:MODE are
+  equivalent; --chmod=MODE and --permissions=MODE also work. Modes are
+  octal 000..777, optionally with one leading zero. No symbolic/special bits.
+  Either peer may set an override; the receiving peer's setting wins.
+  Folders retain source modes. Overrides also apply to .ssynclink files;
+  these descriptions otherwise default to 0600. Private resume data stays
+  private. Excluded/protected paths and unrelated retained items are not
+  chmodded. A dry run changes nothing.
+
+  Use qualifiers on each saved configuration line, or before backup-client
+  / backup-server. Both endpoints need updated builds; restart listeners.
+
+"#;
+
+const HELP_LINKS: &str = r#"Links:
+  Source symlinks become X.ssynclink text descriptions with the target and
+  manual recreation instructions. Targets are never followed; destination
+  symlinks are not created. Broken links and directory links are described.
+
+  Example description for X pointing to A/B/C:
+    type: softlink
+    path: "A/B/C"
+
+  Hard-linked regular files are copied independently with descriptions of
+  known partner paths. Unknown partners are recorded as path: null.
+  Descriptions default to 0600; --chmod overrides that file mode.
+  Description/source name collisions fail before writes. Rename or filter
+  the conflicting entry with skip:. Filters may exclude a link or description.
+  Descriptions participate in verification, resume, dry runs and mirroring.
+  Existing destination links stay protected; special files are unsupported.
+
+"#;
+
+const HELP_MIRRORING: &str = r#"Mirroring and local directory policy:
+  Extra entries inside selected source folders are deleted by default,
+  after verification. Use nodelete to retain them. Single files do not
+  delete neighbours. Source job.ssync becomes job.ssyncbak (case-insensitive
+  suffix), in ordinary transfers and backups. Directory names are renamed too.
+  Existing destination .ssync paths remain protected. Name collisions fail
+  before copying; skip: filters match original and projected names.
+  .ssync-state is reserved and ignored during scans, without inspecting it.
+  Receiving resume state must still be private and owned by the receiving user.
+  Shared-writable folders are allowed; sole-owned is set independently on
+  each peer and adds receiver ownership/ancestor checks. Local users who
+  can modify shared folders are trusted. Transfers are atomic per file.
+
+"#;
+
+const HELP_PASSWORDS: &str = r#"Passwords:
+  Run ssync pwd to generate a password. Supplied passwords need 16 or more
+  characters. Connectors prompt privately; listeners generate a password.
+  Precedence: SSYNC_PASSWORD > SSYNC_PASSWORD_FILE > SSYNC_PASSWORD_FD
+  > password@location > prompt/generated listener password.
+  Password files must be private and owned. Inline passwords can appear
+  in process listings and shell history; prefer a password file for cron.
+  SSYNC_PASSWORD_FILE can name any file. That configured file and its hard-link
+  aliases are excluded from copying, replacement, chmod and mirror deletion,
+  including backups. Unidentified secret files cannot be detected; keep them
+  outside transfer folders or exclude them with skip:.
+
+"#;
+
+const HELP_CONFIG: &str = r#"Saved configurations:
+  ssync commands.ssync            Run one transfer command per line
+  ssync sole-owned commands.ssync  Also require trusted local directories
+
+  Lines contain arguments without a leading ssync; quote paths with spaces.
+  Example line: force nodelete put host:1500 ./docs
+  Commands run concurrently. A failed command cancels sibling commands;
+  avoid duplicate listeners when launching configurations from cron.
+  Transfers copy job.ssync as job.ssyncbak, including backups. Copies retain
+  all contents, possibly inline passwords; keep them suitably protected.
+  No shell expansion or script execution. Rename a copy manually to restore.
+
+"#;
+
+const HELP_BACKUP: &str = r#"Backup commands:
+  ssync [qualifiers] backup-server [port] [file]
+    Persistent upload-only server. Default port: 8425.
+    Default file: /opt/backup-server.ssync
+    Qualifiers: verbose, sole-owned, --chmod MODE.
+  ssync [qualifiers] backup-client [file]
+    Upload each source to each server once, without a confirmation prompt.
+    Default file: /opt/backup-client.ssync
+    Qualifiers: nodelete, dryrun, verify, verbose, sole-owned, skip:substring,
+    --chmod MODE. Uses the same permissions and link descriptions.
+
+  A missing backup file is created privately with examples; edit and rerun.
+  Configured folders must already exist. Backups mirror by default; use
+  nodelete to keep extras. There is no backup history or network restore.
+
+"#;
+
+const HELP_COMPATIBILITY: &str = r#"Compatibility:
+  Linux x86_64, kernel 5.6+; supported local, case-sensitive filesystems.
+  Both endpoints need the updated permissions-aware build. Restart old
+  listeners after upgrading. Published 4.1.3 cannot use these extensions.
+"#;
+
+pub fn help_topic(topic: &str) -> Result<&'static str> {
+    Ok(match topic.to_ascii_lowercase().as_str() {
+        "permissions" => HELP_PERMISSIONS,
+        "links" => HELP_LINKS,
+        "mirroring" => HELP_MIRRORING,
+        "passwords" => HELP_PASSWORDS,
+        "config" => HELP_CONFIG,
+        "backup" => HELP_BACKUP,
+        "compatibility" => HELP_COMPATIBILITY,
+        _ => bail!("unknown help topic; use ssync --help to list topics"),
+    })
+}
+
 pub fn guide() -> Result<Vec<String>> {
     fn ask(label: &str) -> Result<String> {
         print!("{label}: ");

@@ -1,7 +1,7 @@
 # SSync development file map
 
 - `README.md` — native usage, passwords, installation, platform scope and verification entrypoints.
-- `docs/CONTRACT.md` — frozen 4.0 CLI/configuration API and intentional Java migration differences.
+- `docs/CONTRACT.md` — native CLI/configuration API and intentional Java migration differences.
 - `docs/PROTOCOL.md` — OPAQUE/Noise construction, authenticated transfer state machine, threat model and limits.
 - `docs/CRYPTO_REVIEW.md` — cryptographic integration findings, construction analysis, multi-bay risks and repeatable validation.
 - `src/auth_tests.rs` / `tests/podman/crypto.py` — authenticated record faults, key/context binding and real handshake-stage fault matrix.
@@ -13,10 +13,13 @@
 - `Cargo.toml` / `Cargo.lock` — Rust package, minimum toolchain and pinned dependencies.
 - `src/main.rs` / `src/lib.rs` — executable dispatch and native library modules.
 - `tests/podman/sharing.py` — shared-directory defaults, independent local `sole-owned` checks, backup preflight, shared-config warnings and strict/private config regressions.
-- `src/cli.rs` — local directory policy, qualifiers, Java-compatible aliases, password inputs, guidance and local-only commands.
+- `src/links.rs` — bounded configuration-name projection, source-link planning, no-follow descriptions, hardlink relationships and projected-name collision checks.
+- `tests/podman/links.py` — source symlink/hardlink descriptions, recreation, filters, collisions, mode override precedence and backups.
+- `src/cli.rs` — local directory policy, qualifiers, Java-compatible aliases, password inputs, structured/topic help, guidance and local-only commands.
 - `src/auth.rs` — unbiased Base58 generation, OPAQUE/Argon2id, Noise confirmation and bounded framing.
-- `src/fs.rs` — Linux openat2 capabilities, trusted write ancestry, device/mount-alias checks, reserved-state validation, durable directory operations, private partials and atomic replacement.
-- `tests/podman/config_protection.py` — nonfatal configuration transfer skips, mirror preservation, dry runs, old-peer and backup regressions.
+- `src/fs.rs` — Linux openat2 capabilities, trusted write ancestry, device/mount-alias checks, reserved-state scan exclusions, configured-credential identity protection, durable directory operations, private receiving partials and atomic replacement.
+- `tests/podman/config_protection.py` — inert configuration copies, projected collisions, mirror preservation, reserved-state exclusions, password-file/alias protection, dry runs and backups.
+- `tests/podman/permissions.py` — source file/directory modes, unchanged contents, failure finalization, read-only directories, dry runs, backup modes and legacy-peer refusal.
 - `src/transfer.rs` — fixed 200,000-byte pipeline, overlapped comparison/streaming, verified resume, layouts, filters and verified-state deletion.
 - `src/backup.rs` — private line configs/templates, password-selected upload-only bays, bounded independent multi-server backup cycles.
 - `install.sh` — checksum-verified latest Linux release bootstrap, then native installation.
@@ -35,7 +38,7 @@
 - `tests/podman/advanced.py` — many/deep/control-named files, link targets, rotation, quotas, insertion and killed/tampered resume.
 - `tests/podman/management.py` — disposable release-server fixture and atomic native management failure tests.
 - `tests/podman/large.py` — bounded multi-GiB profile, high-offset deltas and root-owned default installation.
-- `examples/adversary.rs` — test-only authenticated malicious peer; excluded from release archives.
+- `examples/adversary.rs` — test-only authenticated malicious peer; source is included but no helper executable is distributed.
 - `scripts/notices.py` / `THIRD_PARTY_NOTICES.txt` / `LICENSE` — public dependency provenance/notices embedded in the binary and distributed with archives.
 - `CHANGELOG.md` — tracked changes.
 - `.gitignore` — prevents private references, logs and generated artifacts entering public history.

@@ -27,7 +27,7 @@ fn run() -> Result<()> {
         Command::Licenses => print!("{}", include_str!("../THIRD_PARTY_NOTICES.txt")),
         Command::Pwd => println!("{}", auth::password()?),
         Command::Version => println!("SSync v{}", env!("CARGO_PKG_VERSION")),
-        Command::Help => print!("{}", cli::HELP),
+        Command::Help(text) => print!("{text}"),
         Command::Guide => {
             let args = cli::guide()?;
             if let Command::Transfer(t) =

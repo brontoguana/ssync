@@ -12,7 +12,7 @@ BASE='/work/app-tests'
 
 
 def main():
-    lab.status()
+    app.setup(app.BINARY)
     source=f'{BASE}/advanced-source';app.fixture(A,source,3_000_000)
     app.execute(A,'''import pathlib,sys,os
 p=pathlib.Path(sys.argv[1]);(p/'-leading').write_bytes(b'leading');(p/'line\\ncontrol\\x1b').write_bytes(b'literal names')
@@ -24,9 +24,9 @@ for i in range(1000):(p/'deep/a/b/c'/f'tiny-{i:04}').write_bytes(str(i).encode()
     job=sec.server(dest,quals=['merge']);r=sec.put(source);measure=app.stats(r);assert app.wait(job)['code']==0
     before=app.snapshot(A,source);after=app.snapshot(B,dest)
     for name,value in before.items():assert after[name][:3]==value[:3],(name,value,after.get(name))
-    assert after['program'][3]==0o600 and '\x1b' not in r['out']
+    assert after['program'][3]==0o755 and '\x1b' not in r['out']
     app.execute(B,"import pathlib;assert not pathlib.Path('/work/app-tests/outside/executed').exists()")
-    app.record('deep tree/1000 small files/control names/leading hyphen and nonexecutable program data',stats=measure)
+    app.record('deep tree/1000 small files/control names/leading hyphen, preserved executable mode, stripped setuid and no execution',stats=measure)
     # Existing destination link types are rejected before any data write.
     for kind in ['symlink','hardlink']:
         d=f'{BASE}/destination-{kind}';sec.mkdir(B,d)

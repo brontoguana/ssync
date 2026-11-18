@@ -6,7 +6,7 @@ use std::{
     io::{Read, Seek, SeekFrom},
     os::{
         fd::{AsRawFd, FromRawFd},
-        unix::fs::MetadataExt,
+        unix::fs::{MetadataExt, PermissionsExt},
     },
     path::{Path, PathBuf},
 };
@@ -139,12 +139,130 @@ fn case_sensitive(dir: &File) -> Result<()> {
     );
     Ok(())
 }
+// Only the explicitly configured credential file is identifiable as a secret.
+// Keep its initial inode as well as its current path, including hard-link aliases.
+#[derive(Clone)]
+struct PasswordFile {
+    path: PathBuf,
+    canonical: Option<PathBuf>,
+    inode: Option<(u64, u64)>,
+}
+impl PasswordFile {
+    fn configured() -> Result<Option<Self>> {
+        let Some(path) = std::env::var_os("SSYNC_PASSWORD_FILE") else {
+            return Ok(None);
+        };
+        let path = absolute(Path::new(&path))?;
+        let inode = std::fs::metadata(&path).ok().map(|m| (m.dev(), m.ino()));
+        Ok(Some(Self {
+            canonical: std::fs::canonicalize(&path).ok(),
+            path,
+            inode,
+        }))
+    }
+    fn matches_path(&self, path: &Path) -> bool {
+        path == self.path || self.canonical.as_deref() == Some(path)
+    }
+    fn matches_inode(&self, meta: &Metadata) -> bool {
+        let inode = Some((meta.dev(), meta.ino()));
+        inode == self.inode
+            || std::fs::metadata(&self.path)
+                .ok()
+                .map(|m| (m.dev(), m.ino()))
+                == inode
+    }
+}
 pub struct Root {
     dir: File,
     pub path: PathBuf,
     sole_owned: bool,
+    password_file: Option<PasswordFile>,
+}
+pub struct DirectoryMode {
+    pub path: String,
+    dev: u64,
+    ino: u64,
+    mode: u32,
+}
+pub fn validate_mode(mode: u32) -> Result<()> {
+    ensure!(mode & !0o777 == 0, "unsupported permission bits");
+    Ok(())
+}
+fn chmod(file: &File, mode: u32) -> Result<()> {
+    if file.metadata()?.mode() & 0o7777 == mode {
+        return Ok(());
+    }
+    file.set_permissions(std::fs::Permissions::from_mode(mode))?;
+    ensure!(
+        file.metadata()?.mode() & 0o7777 == mode,
+        "filesystem cannot preserve permissions"
+    );
+    file.sync_all()?;
+    Ok(())
 }
 impl Root {
+    pub fn validate_directory_mode(&self, mode: u32) -> Result<()> {
+        validate_mode(mode)?;
+        ensure!(
+            !self.sole_owned || mode & 0o022 == 0,
+            "source directory permissions conflict with local sole-owned policy"
+        );
+        Ok(())
+    }
+    pub fn prepare_directory_mode(&self, path: &str, mode: u32) -> Result<DirectoryMode> {
+        self.validate_directory_mode(mode)?;
+        let dir = self.write_dir(path)?;
+        let meta = dir.metadata()?;
+        let result = DirectoryMode {
+            path: path.into(),
+            dev: meta.dev(),
+            ino: meta.ino(),
+            mode,
+        };
+        // The owner needs access until children and mirror cleanup are complete.
+        // Preserve all existing bits during this temporary widening.
+        if meta.mode() & 0o700 != 0o700 {
+            dir.set_permissions(std::fs::Permissions::from_mode(
+                (meta.mode() & 0o7777) | 0o700,
+            ))?;
+        }
+        Ok(result)
+    }
+    pub fn finish_directory_mode(&self, directory: &DirectoryMode) -> Result<()> {
+        let dir = self.write_dir(&directory.path)?;
+        let meta = dir.metadata()?;
+        ensure!(
+            meta.dev() == directory.dev && meta.ino() == directory.ino,
+            "destination directory changed before permission update"
+        );
+        chmod(&dir, directory.mode).with_context(|| {
+            format!(
+                "directory permissions {:?}",
+                self.path.join(&directory.path)
+            )
+        })?;
+        // Temporary owner access may already equal the requested final mode.
+        dir.sync_all()?;
+        Ok(())
+    }
+    pub fn set_file_mode(
+        &self,
+        path: &str,
+        file: &File,
+        expected: &Option<Identity>,
+        mode: u32,
+    ) -> Result<()> {
+        validate_mode(mode)?;
+        self.write_dir(split(path).0)?;
+        let meta = file.metadata()?;
+        regular(&meta)?;
+        ensure!(
+            Some(identity(&meta)) == *expected
+                && self.metadata(path)?.as_ref().map(identity) == *expected,
+            "destination changed before permission update"
+        );
+        chmod(file, mode).with_context(|| format!("file permissions {:?}", self.path.join(path)))
+    }
     /// Strict policy for configuration and installation paths.
     pub fn new(path: &Path) -> Result<Self> {
         Self::with_policy(path, true)
@@ -183,6 +301,7 @@ impl Root {
             dir,
             path,
             sole_owned,
+            password_file: PasswordFile::configured()?,
         })
     }
     pub fn try_clone(&self) -> Result<Self> {
@@ -190,13 +309,34 @@ impl Root {
             dir: self.dir.try_clone()?,
             path: self.path.clone(),
             sole_owned: self.sole_owned,
+            password_file: self.password_file.clone(),
         })
+    }
+    /// Guard credentials before applying ordinary data type/ownership checks.
+    pub fn password_path(&self, path: &str) -> Result<bool> {
+        let Some(secret) = &self.password_file else {
+            return Ok(false);
+        };
+        let absolute = self.path.join(path);
+        if secret.matches_path(&absolute) {
+            return Ok(true);
+        }
+        if !path.is_empty() {
+            valid(path)?;
+        }
+        match beneath(&self.dir, path, libc::O_PATH, 0) {
+            Ok(file) => Ok(secret.matches_inode(&file.metadata()?)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e.into()),
+        }
     }
     pub fn lock(&self) -> Result<()> {
         self.check_writable()?;
         ensure!(
             unsafe { libc::flock(self.dir.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
-            "destination root is busy"
+            "destination root is busy {:?}: {}",
+            self.path,
+            std::io::Error::last_os_error()
         );
         Ok(())
     }
@@ -204,18 +344,22 @@ impl Root {
         if !path.is_empty() {
             valid(path)?;
         }
-        match beneath(&self.dir, path, libc::O_PATH, 0) {
+        (|| {
+            match beneath(&self.dir, path, libc::O_PATH, 0) {
             Ok(f) => {
                 let m = f.metadata()?;
                 ensure!(
                     m.is_dir() || (m.is_file() && m.nlink() == 1),
-                    "links/special files are unsupported"
+                    "links/special files are unsupported (regular files require exactly one hard link; found {} links)",
+                    m.nlink()
                 );
                 Ok(Some(m))
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e.into()),
-        }
+            }
+        })()
+        .with_context(|| format!("cannot inspect transfer path {:?}", self.path.join(path)))
     }
     pub fn read(&self, path: &str) -> Result<File> {
         valid(path)?;
@@ -223,6 +367,60 @@ impl Root {
         let file = beneath(&self.dir, path, libc::O_RDONLY | libc::O_NONBLOCK, 0)?;
         regular(&file.metadata()?)?;
         Ok(file)
+    }
+    /// Source-only inspection: pin the final entry without following a symbolic link.
+    /// Destination and configuration methods deliberately keep single-link restrictions.
+    pub fn source_metadata(&self, path: &str) -> Result<Metadata> {
+        if !path.is_empty() {
+            valid(path)?;
+            self.dir(split(path).0)?;
+        }
+        let meta = beneath(&self.dir, path, libc::O_PATH, 0)?.metadata()?;
+        ensure!(
+            meta.is_dir() || meta.is_file() || meta.is_symlink(),
+            "unsupported special source file {:?}",
+            self.path.join(path)
+        );
+        Ok(meta)
+    }
+    pub fn read_source(&self, path: &str) -> Result<File> {
+        valid(path)?;
+        self.dir(split(path).0)?;
+        let file = beneath(&self.dir, path, libc::O_RDONLY | libc::O_NONBLOCK, 0)?;
+        let meta = file.metadata()?;
+        ensure!(meta.is_file(), "source is not a regular file");
+        ensure!(
+            !self
+                .password_file
+                .as_ref()
+                .is_some_and(|p| p.matches_inode(&meta)),
+            "source changed to the configured password file"
+        );
+        Ok(file)
+    }
+    pub fn source_link(&self, path: &str) -> Result<Vec<u8>> {
+        valid(path)?;
+        self.dir(split(path).0)?;
+        let link = beneath(&self.dir, path, libc::O_PATH, 0)?;
+        ensure!(link.metadata()?.is_symlink(), "source link changed");
+        let mut bytes = vec![0; 16385];
+        let empty = c"";
+        let len = unsafe {
+            libc::readlinkat(
+                link.as_raw_fd(),
+                empty.as_ptr(),
+                bytes.as_mut_ptr().cast(),
+                bytes.len(),
+            )
+        };
+        ensure!(
+            len >= 0 && (len as usize) < bytes.len(),
+            "cannot read source link {:?}: {}",
+            self.path.join(path),
+            std::io::Error::last_os_error()
+        );
+        bytes.truncate(len as usize);
+        Ok(bytes)
     }
     pub fn dir(&self, path: &str) -> Result<File> {
         self.checked_dir(path, false)
@@ -312,9 +510,8 @@ impl Root {
                 .into_string()
                 .map_err(|_| anyhow::anyhow!("non-UTF8 filename unsupported"))?;
             if name == STATE {
-                // Reserved data must never disappear from a successful backup silently.
-                // Only recognizable private resume state is intentionally excluded.
-                check_internal_state(&dir)?;
+                // Internal state is never transfer data. Do not inspect its owner,
+                // permissions or contents while scanning a source or mirror scope.
                 continue;
             }
             valid(&name)?;
@@ -380,6 +577,13 @@ impl Root {
             id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit()),
             "invalid stage id"
         );
+        ensure!(
+            !self
+                .password_file
+                .as_ref()
+                .is_some_and(|p| p.matches_path(&self.path.join(STATE).join(id))),
+            "configured password file conflicts with private resume path"
+        );
         let state = self.state()?;
         let entries = std::fs::read_dir(format!("/proc/self/fd/{}", state.as_raw_fd()))?;
         let mut count = 0;
@@ -400,6 +604,13 @@ impl Root {
         ensure!(
             meta.uid() == unsafe { libc::geteuid() } && meta.mode() & 0o777 == 0o600,
             "unsafe partial file"
+        );
+        ensure!(
+            !self
+                .password_file
+                .as_ref()
+                .is_some_and(|p| p.matches_inode(&meta)),
+            "configured password file conflicts with private resume inode"
         );
         Ok((state, file))
     }
@@ -604,38 +815,6 @@ fn trusted_ancestor(m: &Metadata) -> Result<()> {
     );
     Ok(())
 }
-fn check_internal_state(parent: &File) -> Result<()> {
-    let check = || -> Result<()> {
-        let state = beneath(parent, STATE, libc::O_RDONLY | libc::O_DIRECTORY, 0)?;
-        let meta = state.metadata()?;
-        ensure!(meta.mode() & 0o777 == 0o700, "state directory mode");
-        let owner = meta.uid();
-        let mut count = 0;
-        for entry in std::fs::read_dir(format!("/proc/self/fd/{}", state.as_raw_fd()))? {
-            let name = entry?.file_name();
-            let name = name.to_str().context("state filename")?;
-            ensure!(
-                name.len() == 64 && name.bytes().all(|b| b.is_ascii_hexdigit()),
-                "state filename"
-            );
-            let file = beneath(&state, name, libc::O_PATH, 0)?;
-            let meta = file.metadata()?;
-            regular(&meta)?;
-            ensure!(
-                meta.uid() == owner && meta.mode() & 0o777 == 0o600,
-                "state file owner/mode"
-            );
-            count += 1;
-            ensure!(count <= 128, "state file limit");
-        }
-        Ok(())
-    };
-    check().map_err(|_| {
-        anyhow::anyhow!(
-            "reserved .ssync-state entry is not recognized private resume state; inspect it locally and relocate unrelated data"
-        )
-    })
-}
 pub fn regular(m: &Metadata) -> Result<()> {
     ensure!(
         m.is_file() && m.nlink() == 1,
@@ -742,17 +921,87 @@ mod tests {
         assert!(file_key.1.starts_with(&physical));
     }
     #[test]
-    fn reserved_user_data_is_not_silently_omitted() {
+    fn scans_ignore_reserved_state_but_receiving_validates_it() {
         let temp = tempfile::tempdir().unwrap();
         let root = Root::new(temp.path()).unwrap();
-        std::fs::write(temp.path().join(STATE), b"user data").unwrap();
-        assert!(root.list("").is_err());
-        std::fs::remove_file(temp.path().join(STATE)).unwrap();
-        let id = "a".repeat(64);
-        let _partial = root.stage(&id).unwrap();
+        std::fs::write(temp.path().join(STATE), b"reserved data").unwrap();
         assert!(root.list("").unwrap().is_empty());
-        std::fs::write(temp.path().join(STATE).join("user-data"), b"important").unwrap();
-        assert!(root.list("").is_err());
+        assert!(root.state().is_err());
+        std::fs::remove_file(temp.path().join(STATE)).unwrap();
+        std::fs::create_dir(temp.path().join(STATE)).unwrap();
+        std::fs::set_permissions(
+            temp.path().join(STATE),
+            std::fs::Permissions::from_mode(0o777),
+        )
+        .unwrap();
+        std::fs::write(temp.path().join(STATE).join("unrecognised"), b"private").unwrap();
+        assert!(root.list("").unwrap().is_empty());
+        assert!(root.state().is_err());
+        std::fs::remove_dir_all(temp.path().join(STATE)).unwrap();
+        symlink("/nonexistent", temp.path().join(STATE)).unwrap();
+        assert!(root.list("").unwrap().is_empty());
+        assert!(root.state().is_err());
+        std::fs::remove_file(temp.path().join(STATE)).unwrap();
+        let _partial = root.stage(&"a".repeat(64)).unwrap();
+        assert!(root.list("").unwrap().is_empty());
+    }
+    #[test]
+    fn configured_password_is_not_source_data_or_resume_storage() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut root = Root::with_policy(temp.path(), false).unwrap();
+        let id = "a".repeat(64);
+        let path = temp.path().join(STATE).join(&id);
+        let (state, file) = root.stage(&id).unwrap();
+        std::fs::write(&path, b"secret").unwrap();
+        let m = file.metadata().unwrap();
+        root.password_file = Some(PasswordFile {
+            path: path.clone(),
+            canonical: Some(path.clone()),
+            inode: Some((m.dev(), m.ino())),
+        });
+        assert!(root.stage(&id).is_err());
+        let moved_id = "b".repeat(64);
+        let moved = temp.path().join(STATE).join(&moved_id);
+        std::fs::rename(&path, &moved).unwrap();
+        assert!(root.stage(&moved_id).is_err());
+        std::fs::rename(&moved, temp.path().join("alias")).unwrap();
+        assert!(root.password_path("alias").unwrap());
+        assert!(root.read_source("alias").is_err());
+        assert_eq!(std::fs::read(temp.path().join("alias")).unwrap(), b"secret");
+        drop(state);
+        drop(file);
+    }
+    #[test]
+    fn permission_updates_refuse_replaced_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Root::with_policy(temp.path(), false).unwrap();
+        std::fs::write(temp.path().join("file"), b"original").unwrap();
+        let file = root.read("file").unwrap();
+        let expected = Some(identity(&file.metadata().unwrap()));
+        std::fs::rename(temp.path().join("file"), temp.path().join("old-file")).unwrap();
+        std::fs::write(temp.path().join("file"), b"replacement").unwrap();
+        let before = std::fs::metadata(temp.path().join("file")).unwrap().mode();
+        assert!(root.set_file_mode("file", &file, &expected, 0o777).is_err());
+        assert_eq!(
+            std::fs::metadata(temp.path().join("file")).unwrap().mode(),
+            before
+        );
+        root.mkdirs("dir").unwrap();
+        let directory = root.prepare_directory_mode("dir", 0o755).unwrap();
+        std::fs::rename(temp.path().join("dir"), temp.path().join("old-dir")).unwrap();
+        root.mkdirs("dir").unwrap();
+        assert!(root.finish_directory_mode(&directory).is_err());
+        assert_eq!(
+            std::fs::metadata(temp.path().join("dir")).unwrap().mode() & 0o777,
+            0o700
+        );
+        assert!(validate_mode(0o4755).is_err());
+        assert!(
+            Root::new(temp.path())
+                .unwrap()
+                .validate_directory_mode(0o775)
+                .is_err()
+        );
     }
     #[test]
     fn containment() {
@@ -772,6 +1021,36 @@ mod tests {
         let other = Root::new(temp.path()).unwrap();
         assert!(other.lock().is_err());
         drop(lock);
+    }
+    #[test]
+    fn rejected_entries_and_busy_roots_identify_the_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Root::with_policy(temp.path(), false).unwrap();
+        std::fs::write(temp.path().join("file"), b"unchanged").unwrap();
+        std::fs::hard_link(temp.path().join("file"), temp.path().join("alias")).unwrap();
+        symlink("file", temp.path().join("symlink")).unwrap();
+        let fifo = CString::new(temp.path().join("fifo").as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        for name in ["file", "alias", "symlink", "fifo"] {
+            let error = format!("{:#}", root.metadata(name).unwrap_err());
+            assert!(
+                error.contains(&format!("{:?}", temp.path().join(name))),
+                "{error}"
+            );
+            assert_eq!(
+                std::fs::read(temp.path().join("file")).unwrap(),
+                b"unchanged"
+            );
+        }
+        let error = format!("{:#}", root.metadata("file").unwrap_err());
+        assert!(error.contains("found 2 links"), "{error}");
+        let other = Root::with_policy(temp.path(), false).unwrap();
+        root.lock().unwrap();
+        let error = format!("{:#}", other.lock().unwrap_err());
+        assert!(error.contains("destination root is busy"), "{error}");
+        assert!(error.contains(&format!("{:?}", temp.path())), "{error}");
+        drop(root);
+        other.lock().unwrap();
     }
     #[test]
     fn shared_directory_policy_preserves_containment_and_private_state() {

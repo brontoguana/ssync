@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ordinary/backup interoperability with previously published binaries."""
+"""Mixed ordinary/backup versions refuse before changing transfer data."""
 import argparse
 from pathlib import Path
 import application as app
@@ -20,10 +20,14 @@ def main():
         for server_sends in (False,True):
             dest=f'/work/app-tests/compat-{old_peer}-{server_sends}'
             app.execute(b,'import pathlib,sys;pathlib.Path(sys.argv[1]).mkdir()',dest)
-            measure,_,_=app.transfer(a,b,source,dest,server_sends=server_sends,port=40900)
-            expected=app.snapshot(a,source);actual=app.snapshot(b,dest+'/source')
-            assert {k:v[:3] for k,v in expected.items()}=={k:v[:3] for k,v in actual.items()}
-            app.record('4.0/4.1 ordinary transfer interoperability',old_peer=old_peer,server_sends=server_sends,stats=measure)
+            server,client=(a,b) if server_sends else (b,a)
+            ip=lab.owned('container',server)['NetworkSettings']['Networks'][lab.NETWORK]['IPAddress']
+            job=app.start(server,['force','put' if server_sends else 'get','40900',source if server_sends else dest]);app.ready(job)
+            result=app.command(client,['force','get' if server_sends else 'put',ip+':40900',dest if server_sends else source])
+            remote=app.wait(job)
+            assert result['code']!=0 and remote['code']!=0,(result,remote)
+            assert app.snapshot(b,dest)=={}
+            app.record('ordinary legacy peer refused before data changes',old_peer=old_peer,server_sends=server_sends)
     if args.backup_previous:
         ip=lab.owned('container',b)['NetworkSettings']['Networks'][lab.NETWORK]['IPAddress']
         for old_peer in (a,b):
@@ -41,11 +45,10 @@ p=pathlib.Path(sys.argv[1]);p.write_text('@'+sys.argv[2]+'\\n'+sys.argv[3]+'='+s
 ''',client,f'{ip}:40900',app.PASSWORD,source)
             job=app.start(b,['backup-server','40900',config]);app.ready(job)
             try:
-                result=app.command(a,['backup-client',client]);assert result['code']==0,result
-                expected=app.snapshot(a,source);actual=app.snapshot(b,bay)
-                assert {k:v[:3] for k,v in expected.items()}=={k:v[:3] for k,v in actual.items()}
+                result=app.command(a,['backup-client',client]);assert result['code']!=0,result
+                assert app.snapshot(b,bay)=={}
                 assert app.snapshot(b,other)=={}
-                app.record('4.1 backup interoperability, last bay selected',old_peer=old_peer)
+                app.record('backup legacy peer refused before data changes',old_peer=old_peer)
             finally:app.stop(job);app.wait(job)
 
 

@@ -21,14 +21,18 @@ fn run() -> Result<()> {
     }
     let _: Message = channel.recv()?;
     channel.send(&Message::Begin {
-        roots: vec![(
-            if args[1] == "hold" {
-                args.get(2).unwrap().split('/').next().unwrap().to_string()
-            } else {
-                "source".into()
-            },
-            true,
-        )],
+        roots: if args[1] == "empty-roots" {
+            vec![]
+        } else {
+            vec![(
+                if args[1] == "hold" {
+                    args.get(2).unwrap().split('/').next().unwrap().to_string()
+                } else {
+                    "source".into()
+                },
+                true,
+            )]
+        },
         skip: vec![],
         dryrun: args[1] == "probe",
         nodelete: false,
@@ -44,6 +48,7 @@ fn run() -> Result<()> {
                 hash: blake3::hash(guess).to_hex().to_string(),
                 modified_secs: 1,
                 modified_nanos: 0,
+                mode: 0o644,
             })?;
             let Message::Need { skip } = channel.recv()? else {
                 bail!("expected comparison result");
@@ -51,15 +56,36 @@ fn run() -> Result<()> {
             println!("Content guess matches: {skip}");
             return Ok(());
         }
-        "path" => channel.send(&Message::Directory { path: path.into() })?,
+        "empty-roots" => channel.send(&Message::Directory {
+            path: String::new(),
+            mode: 0o777,
+        })?,
+        "path" => channel.send(&Message::Directory {
+            path: path.into(),
+            mode: 0o755,
+        })?,
+        "mode" => channel.send(&Message::Directory {
+            path: "source".into(),
+            mode: 0o4755,
+        })?,
+        "file-mode" => channel.send(&Message::File {
+            path: path.into(),
+            size: 0,
+            hash: blake3::hash(b"").to_hex().to_string(),
+            modified_secs: 1,
+            modified_nanos: 0,
+            mode: 0o4755,
+        })?,
         "unknown" => channel.send_bytes(b"{\"type\":\"Execute\",\"command\":\"evil\"}")?,
         "duplicate" => {
             channel.send(&Message::Directory {
                 path: "source".into(),
+                mode: 0o755,
             })?;
             let _: Message = channel.recv()?;
             channel.send(&Message::Directory {
                 path: "source".into(),
+                mode: 0o755,
             })?;
         }
         "size" => channel.send(&Message::File {
@@ -68,10 +94,12 @@ fn run() -> Result<()> {
             hash: "a".repeat(64),
             modified_secs: 1,
             modified_nanos: 0,
+            mode: 0o644,
         })?,
         "incomplete" => {
             channel.send(&Message::Directory {
                 path: "source".into(),
+                mode: 0o755,
             })?;
             let _: Message = channel.recv()?;
             channel.send(&Message::Done { entries: 0 })?;
@@ -85,6 +113,7 @@ fn run() -> Result<()> {
                 hash: hash.clone(),
                 modified_secs: 1,
                 modified_nanos: 0,
+                mode: 0o644,
             })?;
             let need: Message = channel.recv()?;
             ensure!(

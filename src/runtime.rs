@@ -3,7 +3,7 @@ use crate::{
     cli::{self, Command, Transfer},
     fs, transfer,
 };
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use std::{
     collections::HashMap,
     io::{Read, Seek, SeekFrom},
@@ -199,7 +199,8 @@ pub fn transfer_command(t: Transfer, control: Arc<Control>) -> Result<()> {
         }
     }
     let credential = Arc::new(Credential::new(&t.password)?);
-    let listener = listen(t.port)?;
+    let listener = listen(t.port)
+        .with_context(|| format!("cannot start {} listener on port {}", t.action, t.port))?;
     listener.set_nonblocking(true)?;
     println!(
         "{} now accepting {}connections on port {}",

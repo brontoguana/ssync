@@ -74,7 +74,7 @@ pub fn parse_command(args: &[String], options: Options) -> Result<Command> {
             && options.skip.is_empty()
             && !options.merge
             && !options.force,
-        "backup-server accepts only verbose and sole-owned; backup policy qualifiers belong to backup-client"
+        "backup-server accepts only verbose, sole-owned and chmod; backup policy qualifiers belong to backup-client"
     );
     let mut port = PORT;
     let mut file = PathBuf::from("/opt/backup-server.ssync");
