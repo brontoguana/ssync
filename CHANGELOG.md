@@ -2,6 +2,8 @@
 
 ## 4.1.4 — 2026-11-18
 
+- Publish the exact tested binary and verify all six anonymous public downloads, README bootstrap, real 4.1.3 upgrade, already-current reporting and uninstall in the disposable rootless lab.
+
 - Validate the versioned production binary with 34 native/parser tests, 153 isolated container checks, warnings-denied lint and formatting.
 
 - Reproduce source read/write/execute permissions on new, replaced and content-identical files and directories, including merge and backup roots. Exclude ownership, groups, ACLs and special mode bits. Keep private staging and finalize directory modes after cleanup and normal failures; forced termination may require a rerun.

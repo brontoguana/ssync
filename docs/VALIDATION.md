@@ -1,6 +1,6 @@
 # SSync validation and delivery history
 
-Current prepared version: **4.1.4**; see [the versioned release gate](#414-permissions-links-and-configuration-release-gate--2026-11-18). Public delivery is pending the checks described there.
+Current release: **4.1.4**; see [the versioned release gate and public delivery](#414-permissions-links-and-configuration-release-gate--2026-11-18).
 
 **SSync 4.0.0 is published and the public delivery smoke passes.** The public repository is [brontoguana/ssync](https://github.com/brontoguana/ssync), with [release v4.0.0](https://github.com/brontoguana/ssync/releases/tag/v4.0.0) pointing to source commit `decf099c73ee1df6424f35b87e7ca767853b1236`. On 2026-10-13, all six downloaded release assets matched the prepared files and SHA-256 manifest. `tests/podman/public_smoke.py --tag v4.0.0` downloaded and verified the public binary, installed it in the existing isolated peer, queried the real public updater (current/available 4.0.0, release details and explicit up-to-date result), and uninstalled it. No host files were mounted; the temporary egress network was removed. Raw evidence is in ignored `target/public-smoke.json` and `target/public-smoke-run.log`.
 
@@ -169,3 +169,9 @@ Security and advanced runners reset their own fixtures and install the candidate
 Ordinary configuration sibling cancellation, destination-lock contention and destination links/special-file restrictions remain unchanged. Source modes copy only rwx bits; receiving ownership/group/ACLs are not reproduced. Normal OS access/chmod failures remain possible. Forced termination can leave temporary modes; rerun to finish metadata. Source state and configured password exclusions do not identify other unconfigured secrets. No independent audit, new platform coverage or sustained handle-count soak is claimed.
 
 These are local versioned release gates. Checksum-gated packaging, exact-commit publication, public asset verification, bootstrap and real 4.1.3-to-4.1.4 update are the remaining delivery steps; their results will be recorded after publication. No production installation has been changed.
+
+### Completed 4.1.4 public delivery
+
+Published [SSync 4.1.4](https://github.com/brontoguana/ssync/releases/tag/v4.1.4) from exact source commit `dc3f7dd91790310c10cee091532dcc19daba0d1d`. Checksum-gated packaging rebuilt the identical tested binary. All six uploaded draft assets and subsequent anonymous public downloads matched the locally prepared files byte for byte, including checksums, notices and source-commit manifest. The public latest-release API and tag select this exact release/commit. The source archive excludes private Java references, local logs and generated directories; licence/notices are present in source and binary packages.
+
+The disposable rootless peer passed verified public download, root-owned installation, a real installed **4.1.3-to-4.1.4** update through the public updater, already-current reporting, uninstall and the exact README bootstrap. The temporary egress network and test installation were removed. No production installation was upgraded. Raw evidence: ignored `target/release-414/public-receipt.json`, `public-smoke.json`, `public-smoke.log`, `prepared-manifest.json` and `DEBUGLOG.md`. This follow-up documentation leaves the published source tag and tested binary unchanged.
