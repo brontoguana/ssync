@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.1.5 — 2026-11-18
+
+- Validate the exact versioned static binary with 37 native/parser tests, 188 recorded container checks, dedicated listener/disk-headroom regressions, six loopback cases, four 4.1.4 compatibility cases, formatting and warnings-denied lint.
+
+- Add repeatable idle-peer and disk-headroom regressions. Update authentication fault tests to require one-shot listener survival and a subsequent valid transfer.
+
+- Keep one-shot `put` and `get` listeners open after rejected or timed-out handshakes, with the same failed-attempt accounting as continuous listeners. Return the first authenticated transfer's result and keep local listener errors fatal.
+- Separate pending handshakes from authenticated transfer slots on continuous and backup listeners. Limit pending handshakes to four per source IP, eight per listener and 64 per process. Keep per-IP backoff and the listener-wide token rate, and remove the fixed listener-wide failure lockout. Release process-wide OPAQUE work permits before waiting on the network.
+- Stop staging incoming file data when the next write would push a capacity-reporting destination filesystem above 99% usage. Check before preparing destination entries and publishing replacements. Apply the same policy to normal receives and backups, preserving existing targets and private resume state on refusal.
+
 ## 4.1.4 — 2026-11-18
 
 - Publish the exact tested binary and verify all six anonymous public downloads, README bootstrap, real 4.1.3 upgrade, already-current reporting and uninstall in the disposable rootless lab.

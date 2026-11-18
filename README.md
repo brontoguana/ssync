@@ -10,6 +10,8 @@ Already installed? Run `sudo ssync update`.
 
 Native, password-authenticated file synchronization with fixed 200,000-byte deltas. Rust executable; no Java, Python or shell runtime required. Files and directories only: no script hooks or remote execution.
 
+Version **4.1.5** keeps one-shot listeners waiting after rejected handshakes, separates pending authentication from active transfer capacity, and stops receives before a write would exceed 99% of reported usable filesystem capacity. The cutoff is best effort across concurrent writers. Restart listeners after updating; 4.1.5 remains wire-compatible with 4.1.4.
+
 Version **4.1.4** reproduces source read/write/execute permissions, adds file-mode overrides and topic help, describes source links as inert `.ssynclink` files, and copies `.ssync` configurations as `.ssyncbak`. Source `.ssync-state` and the configured password file are excluded. **Update both endpoints and restart listeners**: 4.1.4 refuses transfers with earlier versions before modifying transfer data.
 
 Supported release target: **Linux x86_64, kernel 5.6+**, with a static musl binary. Procfs and case-sensitive local Linux filesystems are required; casefold, network/FUSE and pseudo filesystems fail closed. Other platforms are not supported. Native SSync 4 replaces Java SSync 3.3; the command interface is retained, with an incompatible wire protocol. Earlier release changes and security reviews are in [CHANGELOG.md](CHANGELOG.md) and [docs/CRYPTO_REVIEW.md](docs/CRYPTO_REVIEW.md).

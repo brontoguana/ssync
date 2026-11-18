@@ -39,6 +39,18 @@ subprocess.Popen(['python3','/app/proxy.py','40402','40401',sys.argv[1],sys.argv
     return job
 
 
+def rejected_handshake(job):
+    # A failed handshake must leave one-shot listeners available for a valid peer.
+    end=time.monotonic()+20
+    while time.monotonic()<end:
+        result=app.logs(job)
+        assert result['code']=='',result
+        if 'authentication/protocol confirmation failed' in result['err']:
+            return
+        time.sleep(.05)
+    raise AssertionError(('authentication did not finish',app.logs(job)))
+
+
 def main():
     app.setup(app.BINARY)
     for peer in (A,B):
@@ -47,11 +59,11 @@ def main():
     source=f'{BASE}/security-source';app.fixture(A,source,2_000_003)
     dest=f'{BASE}/security-dest';mkdir(B,dest)
     for password in [PASSWORD[:-1]+'R',PASSWORD.lower(),PASSWORD.replace('-','')]:
-        job=server(dest);before=app.snapshot(B,dest);result=put(source,password=password);assert result['code']!=0,result;assert app.wait(job)['code']!=0;unchanged(before,dest)
-        app.record('wrong password before metadata',root_unchanged=True)
+        job=server(dest);before=app.snapshot(B,dest);result=put(source,password=password);assert result['code']!=0,result;rejected_handshake(job);unchanged(before,dest);app.stats(put(source));assert app.wait(job)['code']==0
+        app.record('wrong password before metadata, then valid transfer',root_unchanged=True)
     # Prove authentication happens before even opening a nonexistent transfer root.
-    job=server('/does-not-exist');result=put('/also-missing',password='incorrect-password');assert 'authentication' in result['err'] and result['code']!=0,result;assert app.wait(job)['code']!=0
-    app.record('authentication gates nonexistent roots')
+    job=server('/does-not-exist');result=put('/also-missing',password='incorrect-password');assert 'authentication' in result['err'] and result['code']!=0,result;rejected_handshake(job);result=put(source);assert result['code']!=0 and app.wait(job)['code']!=0
+    app.record('authentication gates nonexistent roots, authenticated local error remains fatal')
     # Capture repeat sessions then replay old KE3 into a fresh handshake.
     handshake=[]
     for _ in range(2):
@@ -64,14 +76,19 @@ print('private')
 ''',p,PASSWORD);assert wire=='private'
     assert handshake[0]!=handshake[1];app.record('fresh handshakes and encrypted filenames/password/content')
     for mode in ['replay','tamper-handshake','missing-final','tamper','duplicate','truncate']:
-        job=server(dest);before=app.snapshot(B,dest);p=proxy(mode);result=put(source,port=40402);assert result['code']!=0,(mode,result);assert app.wait(job)['code']!=0;unchanged(before,dest);app.record(mode,root_unchanged=True)
+        job=server(dest);before=app.snapshot(B,dest);p=proxy(mode);result=put(source,port=40402);assert result['code']!=0,(mode,result)
+        if mode in ['replay','tamper-handshake','missing-final']:
+            rejected_handshake(job);unchanged(before,dest);app.stats(put(source));assert app.wait(job)['code']==0
+        else:
+            assert app.wait(job)['code']!=0;unchanged(before,dest)
+        app.record(mode,root_unchanged=True)
     # Arbitrary unauthenticated data, legacy magic and oversize handshake.
     for packet in ['0000000000000006','5353594e4334000101ffffffff','5353594e433400010100000000']:
         job=server(dest);before=app.snapshot(B,dest)
         app.execute(A,'''import socket,sys
 with socket.create_connection((sys.argv[1],40401),timeout=3) as s:s.sendall(bytes.fromhex(sys.argv[2]));s.shutdown(socket.SHUT_WR)
 ''',IP,packet)
-        assert app.wait(job)['code']!=0;unchanged(before,dest);app.record('unauthenticated malformed handshake',packet=packet)
+        rejected_handshake(job);unchanged(before,dest);app.stats(put(source));assert app.wait(job)['code']==0;app.record('unauthenticated malformed handshake, then valid transfer',packet=packet)
     # Authenticated malicious messages cannot broaden root or invoke commands.
     for mode,path in [('path','../outside'),('path','/work/app-tests/outside'),('path','source/../../outside'),('path','source\\x'),('path','source/.ssync-state/x'),('unknown',''),('mode','source'),('file-mode','source/x'),('duplicate',''),('size','source/x'),('incomplete',''),('block','source/x'),('digest','source/x'),('empty-roots','')]:
         job=server(dest,quals=['merge'] if mode=='empty-roots' else []);before=app.snapshot(B,dest)

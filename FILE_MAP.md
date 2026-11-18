@@ -17,16 +17,16 @@
 - `tests/podman/links.py` — source symlink/hardlink descriptions, recreation, filters, collisions, mode override precedence and backups.
 - `src/cli.rs` — local directory policy, qualifiers, Java-compatible aliases, password inputs, structured/topic help, guidance and local-only commands.
 - `src/auth.rs` — unbiased Base58 generation, OPAQUE/Argon2id, Noise confirmation and bounded framing.
-- `src/fs.rs` — Linux openat2 capabilities, trusted write ancestry, device/mount-alias checks, reserved-state scan exclusions, configured-credential identity protection, durable directory operations, private receiving partials and atomic replacement.
+- `src/fs.rs` — Linux openat2 capabilities, trusted write ancestry, device/mount-alias checks, reserved-state scan exclusions, configured-credential identity protection, durable directory operations, private receiving partials, receiver capacity checks and atomic replacement.
 - `tests/podman/config_protection.py` — inert configuration copies, projected collisions, mirror preservation, reserved-state exclusions, password-file/alias protection, dry runs and backups.
 - `tests/podman/permissions.py` — source file/directory modes, unchanged contents, failure finalization, read-only directories, dry runs, backup modes and legacy-peer refusal.
 - `src/transfer.rs` — fixed 200,000-byte pipeline, overlapped comparison/streaming, verified resume, layouts, filters and verified-state deletion.
 - `src/backup.rs` — private line configs/templates, password-selected upload-only bays, bounded independent multi-server backup cycles.
 - `install.sh` — checksum-verified latest Linux release bootstrap, then native installation.
 - `tests/podman/bootstrap.py` — installer checksum/download failure preservation in a disposable peer.
-- `tests/podman/compatibility.py` — ordinary 4.0 and backup 4.1 cross-version transfers with old/new clients and listeners.
+- `tests/podman/compatibility.py` — legacy ordinary/backup peer refusal before transfer data changes.
 - `tests/podman/backup.py` — real backup fanout, defaults, isolation, failures, encryption, resume and malicious peer tests.
-- `src/runtime.rs` — listening/connecting independently of data direction, persistent operation, bounded admission/concurrency, cancellation and config workers.
+- `src/runtime.rs` — listening/connecting independently of data direction, persistent operation, per-source handshake admission, authenticated transfer slots, cancellation and config workers.
 - `src/management.rs` — native local install/update/uninstall and ownership attached atomically to the executable.
 - `tests/parsers.rs` — 20,000 seeded parser mutations and path-contract boundary tests.
 - `tests/TEST_MATRIX.md` — required feature/security gate inventory and disposition references.
@@ -52,3 +52,5 @@ Local private references, not published or needed for native builds:
 - `scripts/build-release.py` — versioned static Linux assets, source archive, dependency notices, source-commit manifest, tested-binary hash gate and SHA-256 checksums from committed source.
 - `tests/podman/longrun.py` — encrypted progressing transfer beyond socket idle deadline, with deterministic byte-rate proxy delay.
 - `tests/podman/public_smoke.py` — post-publication integrity/native install/update/uninstall smoke in the existing disposable peer, with scoped temporary egress and cleanup.
+
+- `tests/podman/receiver_limits.py` — idle-handshake isolation, disk cutoff, safe resume and backup headroom/concurrency regressions.

@@ -3,7 +3,7 @@ use crate::{
     auth::{self, Channel, Credential},
     cli::{self, Options, Transfer},
     fs::{self, Root},
-    runtime::{self, Admission, Control},
+    runtime::{self, Control, Handshakes, MAX_PENDING_HANDSHAKES, Slot},
     transfer,
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -21,12 +21,13 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 use zeroize::Zeroizing;
 
 pub const PORT: u16 = 8425;
 const MAX: usize = 32;
+const MAX_UPLOADS: usize = 4;
 const CONFIG_LIMIT: u64 = 1_048_576;
 pub enum Command {
     Server {
@@ -356,25 +357,23 @@ fn server(port: u16, config: Config, options: Options, control: Arc<Control>) ->
             .map(|_| Mutex::new(()))
             .collect::<Vec<_>>(),
     );
-    let admission = Arc::new(Mutex::new(Admission::default()));
+    let handshakes = Handshakes::default();
     let active = Arc::new(AtomicUsize::new(0));
     let mut workers: Vec<std::thread::JoinHandle<()>> = Vec::new();
     while !control.stop.load(Ordering::Relaxed) {
         workers.retain(|w| !w.is_finished());
         match listener.accept() {
             Ok((socket, addr)) => {
-                let ip = addr.ip().to_canonical();
-                if active.load(Ordering::Relaxed) >= 4
-                    || !admission.lock().unwrap().allow(ip, Instant::now())
-                {
+                if workers.len() >= MAX_PENDING_HANDSHAKES + MAX_UPLOADS {
                     continue;
                 }
-                active.fetch_add(1, Ordering::Relaxed);
-                let (credentials, config, locks, admission, active, control) = (
+                let Some(mut handshake) = handshakes.reserve(addr.ip(), &control) else {
+                    continue;
+                };
+                let (credentials, config, locks, active, control) = (
                     credentials.clone(),
                     config.clone(),
                     bay_locks.clone(),
-                    admission.clone(),
                     active.clone(),
                     control.clone(),
                 );
@@ -382,21 +381,22 @@ fn server(port: u16, config: Config, options: Options, control: Arc<Control>) ->
                 workers.push(std::thread::spawn(move || {
                     let result = (|| -> Result<()> {
                         let _socket = control.track(&socket)?;
-                        let (mut channel, selected) =
-                            match Channel::authenticate_backup(socket, "", Some(&credentials)) {
-                                Ok(value) => {
-                                    admission.lock().unwrap().success(ip);
-                                    value
-                                }
-                                Err(_) => {
-                                    admission.lock().unwrap().failure(ip, Instant::now());
-                                    bail!("backup authentication/protocol confirmation failed");
-                                }
-                            };
-                        let Ok(_bay) = locks[selected].try_lock() else {
+                        let authenticated =
+                            Channel::authenticate_backup(socket, "", Some(&credentials));
+                        handshake.record(&authenticated);
+                        let (mut channel, selected) = authenticated.map_err(|_| {
+                            anyhow::anyhow!("backup authentication/protocol confirmation failed")
+                        })?;
+                        let session = locks[selected]
+                            .try_lock()
+                            .ok()
+                            .zip(Slot::take(&active, MAX_UPLOADS));
+                        let Some((_bay, _session)) = session else {
+                            // Keep this brief refusal within the pending connection limit.
                             channel.send(&false)?;
-                            bail!("backup bay busy; retry later");
+                            bail!("backup receiver or bay busy; retry later");
                         };
+                        drop(handshake);
                         channel.send(&true)?;
                         let t = transfer(&config.entries[selected], false, options);
                         transfer::run(&t, &mut channel, false, &control.stop)?;
@@ -405,7 +405,6 @@ fn server(port: u16, config: Config, options: Options, control: Arc<Control>) ->
                     if let Err(e) = result {
                         eprintln!("Backup upload failed: {e:#}");
                     }
-                    active.fetch_sub(1, Ordering::Relaxed);
                 }));
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -449,7 +448,10 @@ fn upload(
     let _socket = control.track(&socket)?;
     let (mut channel, _) = Channel::authenticate_backup(socket, &entry.password, None)
         .map_err(|_| anyhow::anyhow!("backup authentication/protocol confirmation failed"))?;
-    ensure!(channel.recv::<bool>()?, "backup bay busy; retry later");
+    ensure!(
+        channel.recv::<bool>()?,
+        "backup receiver or bay busy; retry later"
+    );
     transfer::run(
         &transfer(entry, true, options.clone()),
         &mut channel,

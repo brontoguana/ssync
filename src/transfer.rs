@@ -682,6 +682,7 @@ fn receive(t: &Transfer, c: &mut Channel, connector: bool, stop: &AtomicBool) ->
                             ensure!(m.is_dir(), "directory/file conflict");
                         }
                     } else {
+                        root.check_receive_space()?;
                         root.mkdirs(&path)?;
                         directories.push(root.prepare_directory_mode(&path, mode)?);
                     }
@@ -853,6 +854,7 @@ fn receive_file(
         size
     );
     if !t.options.dryrun {
+        root.check_receive_space()?;
         root.mkdirs(fs::split(path).0)?;
     }
     let resume_key = zeroize::Zeroizing::new(blake3::derive_key(
@@ -954,6 +956,7 @@ fn receive_file(
                     stats.reused_bytes += current.1 as u64;
                 }
                 if let Some((_, file)) = stage.as_mut() {
+                    fs::check_receive_space(file, data.len())?;
                     file.seek(SeekFrom::Start(offset))?;
                     file.write_all(&data)?;
                     final_hash.update(&data);
@@ -1008,6 +1011,7 @@ fn receive_file(
             "filesystem cannot preserve modification timestamp"
         );
         f.sync_all()?;
+        root.check_receive_space()?;
         // Verify receiver base has not changed even if copied ranges were identical.
         ensure!(
             root.metadata(path)?.as_ref().map(fs::identity) == expected,

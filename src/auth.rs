@@ -29,9 +29,9 @@ const AUTH_TIMEOUT: Duration = Duration::from_secs(15);
 static AUTH_WORK: AtomicUsize = AtomicUsize::new(0);
 struct AuthPermit;
 impl AuthPermit {
-    fn acquire() -> Result<Self> {
-        let end = Instant::now() + AUTH_TIMEOUT;
+    fn acquire(end: Instant) -> Result<Self> {
         loop {
+            ensure!(Instant::now() < end, "authentication concurrency limit");
             if AUTH_WORK
                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
                     (n < 4).then_some(n + 1)
@@ -40,7 +40,6 @@ impl AuthPermit {
             {
                 return Ok(Self);
             }
-            ensure!(Instant::now() < end, "authentication concurrency limit");
             std::thread::sleep(Duration::from_millis(10));
         }
     }
@@ -102,7 +101,7 @@ pub struct Credential {
 impl Credential {
     pub fn new(password: &str) -> Result<Self> {
         validate_password(password)?;
-        let _permit = AuthPermit::acquire()?;
+        let _permit = AuthPermit::acquire(Instant::now() + AUTH_TIMEOUT)?;
         let setup = ServerSetup::<Suite>::new(&mut OsRng);
         let start = ClientRegistration::<Suite>::start(&mut OsRng, password.as_bytes())?;
         let response = ServerRegistration::start(&setup, start.message, CONTEXT)?;
@@ -197,7 +196,6 @@ impl Channel {
             } else {
                 AUTH_TIMEOUT
             };
-        let _permit = AuthPermit::acquire()?;
         // A wall-clock watchdog prevents slow trickle reads extending read_exact indefinitely.
         let deadline_socket = socket.try_clone()?;
         let done = Arc::new((Mutex::new(false), Condvar::new()));
@@ -267,17 +265,20 @@ impl Channel {
                 send_raw(&mut socket, &[credentials.len() as u8])?;
             }
             for c in credentials {
-                let start = ServerLogin::start(
-                    &mut OsRng,
-                    &c.setup,
-                    Some(c.record.clone()),
-                    request.clone(),
-                    CONTEXT,
-                    ServerLoginParameters {
-                        context: Some(&context),
-                        ..Default::default()
-                    },
-                )?;
+                let start = {
+                    let _permit = AuthPermit::acquire(end)?;
+                    ServerLogin::start(
+                        &mut OsRng,
+                        &c.setup,
+                        Some(c.record.clone()),
+                        request.clone(),
+                        CONTEXT,
+                        ServerLoginParameters {
+                            context: Some(&context),
+                            ..Default::default()
+                        },
+                    )?
+                };
                 deadline(&socket, end)?;
                 send_raw(&mut socket, &start.message.serialize())?;
                 states.push(start.state);
@@ -291,18 +292,25 @@ impl Channel {
             };
             ensure!(selected < states.len(), "invalid bay confirmation");
             let state = states.swap_remove(selected);
-            let mut finish = state.finish(
-                CredentialFinalization::deserialize(finalization)?,
-                ServerLoginParameters {
-                    context: Some(&context),
-                    ..Default::default()
-                },
-            )?;
+            let mut finish = {
+                let _permit = AuthPermit::acquire(end)?;
+                state.finish(
+                    CredentialFinalization::deserialize(finalization)?,
+                    ServerLoginParameters {
+                        context: Some(&context),
+                        ..Default::default()
+                    },
+                )?
+            };
             let session = Zeroizing::new(finish.session_key);
             finish.session_key.zeroize();
             (session, selected)
         } else {
-            let start = ClientLogin::<Suite>::start(&mut OsRng, password.as_bytes())?;
+            let start = {
+                let _permit = AuthPermit::acquire(end)?;
+                ClientLogin::<Suite>::start(&mut OsRng, password.as_bytes())?
+            };
+            deadline(&socket, end)?;
             send_raw(&mut socket, &start.message.serialize())?;
             let count = if backup {
                 let count = recv_raw(&mut socket, 1)?;
@@ -315,7 +323,7 @@ impl Channel {
             for index in 0..count {
                 let response = recv_raw(&mut socket, HANDSHAKE_LIMIT)?;
                 if matched.is_none() {
-                    deadline(&socket, end)?;
+                    let _permit = AuthPermit::acquire(end)?;
                     if let Ok(mut finish) = start.state.clone().finish(
                         &mut OsRng,
                         password.as_bytes(),

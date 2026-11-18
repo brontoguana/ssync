@@ -15,16 +15,24 @@ use std::{
     },
     time::{Duration, Instant},
 };
+pub(crate) const MAX_PENDING_HANDSHAKES: usize = 8;
+const MAX_TRANSFERS: usize = 8;
+const MAX_PENDING_PER_IP: usize = 4;
+const MAX_PROCESS_HANDSHAKES: usize = 64;
 static NEXT: AtomicU64 = AtomicU64::new(1);
+const AUTHENTICATION_FAILED: &str =
+    "authentication/protocol confirmation failed; SSync 4 and matching passwords required";
 pub struct Control {
     pub stop: AtomicBool,
     sockets: Mutex<HashMap<u64, TcpStream>>,
+    handshakes: Arc<AtomicUsize>,
 }
 impl Default for Control {
     fn default() -> Self {
         Self {
             stop: AtomicBool::new(false),
             sockets: Mutex::new(HashMap::new()),
+            handshakes: Arc::default(),
         }
     }
 }
@@ -63,94 +71,160 @@ impl Drop for SocketGuard {
         }
     }
 }
-struct Attempts {
+pub(crate) struct Slot(Arc<AtomicUsize>);
+impl Slot {
+    pub(crate) fn take(counter: &Arc<AtomicUsize>, limit: usize) -> Option<Self> {
+        counter
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                (n < limit).then_some(n + 1)
+            })
+            .ok()?;
+        Some(Self(counter.clone()))
+    }
+}
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+struct Budget {
     tokens: f64,
     last: Instant,
-    failures: u32,
-    blocked: Instant,
 }
-pub struct Admission {
+impl Budget {
+    fn new(tokens: f64, now: Instant) -> Self {
+        Self { tokens, last: now }
+    }
+
+    fn available(&mut self, now: Instant, max: f64, rate: f64) -> bool {
+        self.tokens =
+            (self.tokens + now.saturating_duration_since(self.last).as_secs_f64() * rate).min(max);
+        self.last = now;
+        self.tokens >= 1.
+    }
+}
+struct Attempts {
+    budget: Budget,
+    blocked: Instant,
+    failures: u32,
+    pending: usize,
+}
+struct Admission {
     ips: HashMap<IpAddr, Attempts>,
-    global: Attempts,
+    global: Budget,
+    pending: usize,
 }
 impl Default for Admission {
     fn default() -> Self {
         Self {
             ips: HashMap::new(),
-            global: Attempts {
-                tokens: 20.,
-                last: Instant::now(),
-                failures: 0,
-                blocked: Instant::now(),
-            },
+            global: Budget::new(20., Instant::now()),
+            pending: 0,
         }
     }
 }
 impl Admission {
-    pub fn allow(&mut self, ip: IpAddr, now: Instant) -> bool {
-        self.ips
-            .retain(|_, a| now.saturating_duration_since(a.last) < Duration::from_secs(300));
-        // Rejected traffic must not spend another client's admission credit or
-        // allocate new per-IP state once the listener-wide budget is exhausted.
-        if !Self::available(&mut self.global, now, 20., 1.) {
+    fn reserve(&mut self, ip: IpAddr, now: Instant) -> bool {
+        if self.pending >= MAX_PENDING_HANDSHAKES || !self.global.available(now, 20., 1.) {
             return false;
         }
+        self.ips.retain(|_, a| {
+            a.pending != 0
+                || now.saturating_duration_since(a.budget.last) < Duration::from_secs(300)
+        });
         if !self.ips.contains_key(&ip) && self.ips.len() >= 1024 {
             return false;
         }
         let a = self.ips.entry(ip).or_insert(Attempts {
-            tokens: 5.,
-            last: now,
-            failures: 0,
+            budget: Budget::new(5., now),
             blocked: now,
+            failures: 0,
+            pending: 0,
         });
-        if !Self::available(a, now, 5., 0.2) {
+        if a.pending >= MAX_PENDING_PER_IP || a.blocked > now || !a.budget.available(now, 5., 0.2) {
             return false;
         }
         self.global.tokens -= 1.;
-        a.tokens -= 1.;
+        a.budget.tokens -= 1.;
+        self.pending += 1;
+        a.pending += 1;
         true
     }
-    fn available(a: &mut Attempts, now: Instant, max: f64, rate: f64) -> bool {
-        a.tokens = (a.tokens + now.saturating_duration_since(a.last).as_secs_f64() * rate).min(max);
-        a.last = now;
-        a.blocked <= now && a.tokens >= 1.
-    }
-    pub fn failure(&mut self, ip: IpAddr, now: Instant) {
-        if let Some(a) = self.ips.get_mut(&ip) {
-            a.failures = a.failures.saturating_add(1);
-            if a.failures >= 5 {
-                a.blocked = now + Duration::from_secs((5u64 << ((a.failures - 5).min(4))).min(60));
+
+    fn release(&mut self, ip: IpAddr, outcome: Option<bool>, now: Instant) {
+        self.pending -= 1;
+        if outcome == Some(true) {
+            self.global.tokens = (self.global.tokens + 1.).min(20.);
+        }
+        let a = self.ips.get_mut(&ip).unwrap();
+        a.pending -= 1;
+        match outcome {
+            Some(true) => {
+                a.failures = 0;
+                a.budget.tokens = (a.budget.tokens + 1.).min(5.);
             }
+            Some(false) => {
+                a.failures = a.failures.saturating_add(1);
+                if a.failures >= 5 {
+                    let delay = (5u64 << ((a.failures - 5).min(4))).min(60);
+                    a.blocked = now + Duration::from_secs(delay);
+                }
+            }
+            None => {}
         }
-        self.global.failures = self.global.failures.saturating_add(1);
-        if self.global.failures >= 20 {
-            self.global.blocked = now + Duration::from_secs(30);
-            self.global.failures = 0;
-        }
-    }
-    pub fn success(&mut self, ip: IpAddr) {
-        // Correct authentication returns its admission credit; reusable valid credentials
-        // must not exhaust the failed-guess budget during continuous operation.
-        self.global.tokens = (self.global.tokens + 1.).min(20.);
-        if let Some(a) = self.ips.get_mut(&ip) {
-            a.failures = 0;
-            a.tokens = (a.tokens + 1.).min(5.);
-        } /* global failures intentionally not erased by an attacker with a valid password */
     }
 }
-fn session(
+#[derive(Default)]
+pub(crate) struct Handshakes(Arc<Mutex<Admission>>);
+impl Handshakes {
+    pub(crate) fn reserve(&self, ip: IpAddr, control: &Control) -> Option<Handshake> {
+        let process_slot = Slot::take(&control.handshakes, MAX_PROCESS_HANDSHAKES)?;
+        let ip = ip.to_canonical();
+        if !self.0.lock().unwrap().reserve(ip, Instant::now()) {
+            return None;
+        }
+        Some(Handshake {
+            admission: self.0.clone(),
+            ip,
+            outcome: None,
+            _process_slot: process_slot,
+        })
+    }
+}
+pub(crate) struct Handshake {
+    admission: Arc<Mutex<Admission>>,
+    ip: IpAddr,
+    outcome: Option<bool>,
+    _process_slot: Slot,
+}
+impl Handshake {
+    pub(crate) fn record<T>(&mut self, result: &Result<T>) {
+        self.outcome = Some(result.is_ok());
+    }
+}
+impl Drop for Handshake {
+    fn drop(&mut self) {
+        self.admission
+            .lock()
+            .unwrap()
+            .release(self.ip, self.outcome, Instant::now());
+    }
+}
+fn connector_session(t: &Transfer, socket: TcpStream, control: &Arc<Control>) -> Result<()> {
+    let _guard = control.track(&socket)?;
+    let mut channel = Channel::authenticate(socket, &t.password, None, t.sending())
+        .map_err(|_| anyhow::anyhow!(AUTHENTICATION_FAILED))?;
+    transfer::run(t, &mut channel, true, &control.stop)?;
+    Ok(())
+}
+fn authenticate_listener(
     t: &Transfer,
     socket: TcpStream,
-    credential: Option<&Credential>,
-    control: &Arc<Control>,
-) -> Result<()> {
-    let _guard = control.track(&socket)?;
-    let connector = credential.is_none();
-    let mut channel = Channel::authenticate(socket, &t.password, credential, t.sending())
-        .map_err(|_| anyhow::anyhow!("authentication/protocol confirmation failed; SSync 4 and matching passwords required"))?;
-    transfer::run(t, &mut channel, connector, &control.stop)?;
-    Ok(())
+    credential: &Credential,
+) -> Result<Channel> {
+    Channel::authenticate(socket, &t.password, Some(credential), t.sending())
+        .map_err(|_| anyhow::anyhow!(AUTHENTICATION_FAILED))
 }
 fn connect_addresses(
     addresses: impl IntoIterator<Item = SocketAddr>,
@@ -176,7 +250,7 @@ pub fn transfer_command(t: Transfer, control: Arc<Control>) -> Result<()> {
             let connected =
                 (|| connect_addresses((host.as_str(), t.port).to_socket_addrs()?, &control.stop))();
             if let Ok(s) = connected {
-                let result = session(&t, s, None, &control);
+                let result = connector_session(&t, s, &control);
                 if !t.continuous() {
                     return result;
                 }
@@ -208,71 +282,52 @@ pub fn transfer_command(t: Transfer, control: Arc<Control>) -> Result<()> {
         if t.continuous() { "ongoing " } else { "" },
         t.port
     );
-    let admission = Arc::new(Mutex::new(Admission::default()));
+    let handshakes = Handshakes::default();
     let active = Arc::new(AtomicUsize::new(0));
-    let authenticating = Arc::new(AtomicUsize::new(0));
     let mut workers = Vec::new();
     while !control.stop.load(Ordering::Relaxed) {
         workers.retain(|worker: &std::thread::JoinHandle<()>| !worker.is_finished());
         match listener.accept() {
             Ok((socket, addr)) => {
-                if active.load(Ordering::Relaxed) >= 8
-                    || authenticating.load(Ordering::Relaxed) >= 4
-                    || !admission
-                        .lock()
-                        .unwrap()
-                        .allow(addr.ip().to_canonical(), Instant::now())
-                {
+                if workers.len() >= MAX_PENDING_HANDSHAKES + MAX_TRANSFERS {
                     continue;
                 }
+                let Some(mut handshake) = handshakes.reserve(addr.ip(), &control) else {
+                    continue;
+                };
                 if !t.continuous() {
-                    let result = session(&t, socket, Some(&credential), &control);
-                    return result;
+                    let _guard = control.track(&socket)?;
+                    let authenticated = authenticate_listener(&t, socket, &credential);
+                    handshake.record(&authenticated);
+                    drop(handshake);
+                    match authenticated {
+                        Ok(mut channel) => {
+                            return transfer::run(&t, &mut channel, false, &control.stop)
+                                .map(|_| ());
+                        }
+                        Err(e) => eprintln!("Session failed: {e:#}"),
+                    }
+                    continue;
                 }
-                active.fetch_add(1, Ordering::Relaxed);
-                authenticating.fetch_add(1, Ordering::Relaxed);
                 let t = t.clone();
                 let credential = credential.clone();
                 let control = control.clone();
-                let admission = admission.clone();
                 let active = active.clone();
-                let authenticating = authenticating.clone();
                 workers.push(std::thread::spawn(move || {
                     let result = (|| -> Result<()> {
-                        let _guard = match control.track(&socket) {
-                            Ok(g) => g,
-                            Err(e) => {
-                                authenticating.fetch_sub(1, Ordering::Relaxed);
-                                return Err(e);
-                            }
-                        };
-                        let authenticated = Channel::authenticate(
-                            socket,
-                            &t.password,
-                            Some(&credential),
-                            t.sending(),
-                        );
-                        authenticating.fetch_sub(1, Ordering::Relaxed);
-                        let mut channel = match authenticated {
-                            Ok(c) => {
-                                admission.lock().unwrap().success(addr.ip().to_canonical());
-                                c
-                            }
-                            Err(_) => {
-                                admission
-                                    .lock()
-                                    .unwrap()
-                                    .failure(addr.ip().to_canonical(), Instant::now());
-                                bail!("authentication/protocol confirmation failed; SSync 4 and matching passwords required");
-                            }
-                        };
+                        let _guard = control.track(&socket)?;
+                        let authenticated = authenticate_listener(&t, socket, &credential);
+                        handshake.record(&authenticated);
+                        let mut channel = authenticated?;
+                        let slot = Slot::take(&active, MAX_TRANSFERS);
+                        drop(handshake);
+                        let _session = slot.context("listener transfer slots busy; retry later")?;
                         transfer::run(&t, &mut channel, false, &control.stop)?;
                         Ok(())
                     })();
                     if let Err(e) = result {
                         eprintln!("Session failed: {e:#}");
                     }
-                    active.fetch_sub(1, Ordering::Relaxed);
                 }));
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -438,22 +493,80 @@ mod tests {
         let now = Instant::now();
         let blocked = "127.0.0.1".parse().unwrap();
         for _ in 0..5 {
-            assert!(admission.allow(blocked, now));
-            admission.failure(blocked, now);
+            assert!(admission.reserve(blocked, now));
+            admission.release(blocked, Some(false), now);
         }
         let credit = admission.global.tokens;
         for _ in 0..1000 {
-            assert!(!admission.allow(blocked, now));
+            assert!(!admission.reserve(blocked, now));
         }
         assert_eq!(admission.global.tokens, credit);
-        assert!(admission.allow("127.0.0.2".parse().unwrap(), now));
+        assert!(admission.reserve("127.0.0.2".parse().unwrap(), now));
 
         let mut admission = Admission::default();
         let now = Instant::now();
         for i in 0..2000 {
-            admission.allow(IpAddr::from([10, 1, (i / 256) as u8, (i % 256) as u8]), now);
+            let ip = IpAddr::from([10, 1, (i / 256) as u8, (i % 256) as u8]);
+            if admission.reserve(ip, now) {
+                admission.release(ip, Some(false), now);
+            }
         }
         assert_eq!(admission.ips.len(), 20);
+        // A new address can use the next replenished token without a global penalty.
+        assert!(admission.reserve("192.0.2.1".parse().unwrap(), now + Duration::from_secs(1)));
+    }
+    #[test]
+    fn pending_limits_leave_room_for_another_source_and_release_on_drop() {
+        let control = Control::default();
+        let handshakes = Handshakes::default();
+        let slots: Vec<_> = (0..MAX_PENDING_PER_IP)
+            .map(|_| {
+                handshakes
+                    .reserve("127.0.0.1".parse().unwrap(), &control)
+                    .unwrap()
+            })
+            .collect();
+        assert!(
+            handshakes
+                .reserve("::ffff:127.0.0.1".parse().unwrap(), &control)
+                .is_none()
+        );
+        let other = handshakes
+            .reserve("127.0.0.2".parse().unwrap(), &control)
+            .unwrap();
+        assert_eq!(control.handshakes.load(Ordering::Relaxed), slots.len() + 1);
+        drop(slots);
+        assert!(
+            handshakes
+                .reserve("127.0.0.1".parse().unwrap(), &control)
+                .is_some()
+        );
+        drop(other);
+        assert_eq!(control.handshakes.load(Ordering::Relaxed), 0);
+    }
+    #[test]
+    fn pending_handshakes_have_independent_listener_and_process_limits() {
+        let control = Control::default();
+        let listeners: Vec<_> = (0..MAX_PROCESS_HANDSHAKES / MAX_PENDING_HANDSHAKES)
+            .map(|_| Handshakes::default())
+            .collect();
+        let mut pending = Vec::new();
+        for listener in &listeners {
+            for n in 0..MAX_PENDING_HANDSHAKES {
+                let ip = IpAddr::from([192, 0, 2, n as u8]);
+                pending.push(listener.reserve(ip, &control).unwrap());
+            }
+            assert!(
+                listener
+                    .reserve("198.51.100.1".parse().unwrap(), &control)
+                    .is_none()
+            );
+        }
+        let listener = Handshakes::default();
+        let ip = "198.51.100.1".parse().unwrap();
+        assert!(listener.reserve(ip, &control).is_none());
+        pending.pop();
+        assert!(listener.reserve(ip, &control).is_some());
     }
     #[test]
     fn config_growth_cannot_bypass_read_limit() {
@@ -488,14 +601,14 @@ mod tests {
         let now = Instant::now();
         let ip = "127.0.0.1".parse().unwrap();
         for _ in 0..100 {
-            assert!(a.allow(ip, now));
-            a.success(ip);
+            assert!(a.reserve(ip, now));
+            a.release(ip, Some(true), now);
         }
         for _ in 0..5 {
-            assert!(a.allow(ip, now));
-            a.failure(ip, now);
+            assert!(a.reserve(ip, now));
+            a.release(ip, Some(false), now);
         }
-        assert!(!a.allow(ip, now));
+        assert!(!a.reserve(ip, now));
     }
     #[test]
     fn bounded_throttling() {
@@ -503,14 +616,14 @@ mod tests {
         let now = Instant::now();
         let ip = "127.0.0.1".parse().unwrap();
         for _ in 0..5 {
-            assert!(a.allow(ip, now));
-            a.failure(ip, now);
+            assert!(a.reserve(ip, now));
+            a.release(ip, Some(false), now);
         }
-        assert!(!a.allow(ip, now));
-        assert!(a.allow(ip, now + Duration::from_secs(61)));
+        assert!(!a.reserve(ip, now));
+        assert!(a.reserve(ip, now + Duration::from_secs(61)));
         for i in 0..2000 {
             let ip = IpAddr::from([10, 1, (i / 256) as u8, (i % 256) as u8]);
-            a.allow(ip, now);
+            a.reserve(ip, now);
         }
         assert!(a.ips.len() <= 1024);
     }

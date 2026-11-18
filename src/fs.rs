@@ -13,6 +13,41 @@ use std::{
 
 pub const STATE: &str = ".ssync-state";
 pub const MAX_ENTRIES: usize = 10_000;
+// Like df, measure usage against used blocks plus the blocks available to
+// unprivileged writers, leaving any filesystem-reserved blocks untouched.
+fn enough_receive_space(blocks: u128, free: u128, available: u128, requested: u128) -> bool {
+    let used = blocks.saturating_sub(free);
+    available != 0 && available >= (used + available).div_ceil(100) + requested
+}
+
+pub(crate) fn check_receive_space(file: &File, bytes: usize) -> Result<()> {
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: fstatvfs receives a live descriptor and writable storage.
+    if unsafe { libc::fstatvfs(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("cannot check receiver free space");
+    }
+    // SAFETY: fstatvfs initialized the structure on success.
+    let stat = unsafe { stat.assume_init() };
+    if stat.f_blocks == 0 {
+        // Ramfs has no fixed capacity to report.
+        return Ok(());
+    }
+    ensure!(
+        stat.f_frsize > 0,
+        "receiver filesystem reports an invalid block size"
+    );
+    let requested = (bytes as u128).div_ceil(u128::from(stat.f_frsize));
+    ensure!(
+        enough_receive_space(
+            u128::from(stat.f_blocks),
+            u128::from(stat.f_bfree),
+            u128::from(stat.f_bavail.min(stat.f_bfree)),
+            requested,
+        ),
+        "receiver filesystem would exceed 99% usage; free space before retrying"
+    );
+    Ok(())
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Identity {
     dev: u64,
@@ -521,6 +556,10 @@ impl Root {
         names.sort();
         Ok(names)
     }
+    pub(crate) fn check_receive_space(&self) -> Result<()> {
+        check_receive_space(&self.dir, 0)
+            .with_context(|| format!("cannot write to destination {:?}", self.path))
+    }
     pub fn mkdirs(&self, path: &str) -> Result<()> {
         if path.is_empty() {
             return Ok(());
@@ -887,6 +926,16 @@ pub fn open_config_file(path: &Path) -> Result<File> {
 mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
+    #[test]
+    fn receive_space_reserves_one_percent_and_accounts_for_the_next_write() {
+        assert!(enough_receive_space(1000, 10, 10, 0));
+        assert!(!enough_receive_space(1000, 10, 10, 1));
+        assert!(!enough_receive_space(1000, 9, 9, 0));
+        assert!(enough_receive_space(1000, 12, 12, 2));
+        assert!(!enough_receive_space(1000, 12, 12, 3));
+        assert!(!enough_receive_space(1000, 59, 9, 0));
+        assert!(enough_receive_space(1000, 60, 10, 0));
+    }
     #[test]
     fn bind_alias_storage_paths_and_escaped_mounts() {
         let table = b"10 1 8:1 / / rw - ext4 /dev/test rw\n20 10 8:1 /srv/bays/one/sub /alias rw - ext4 /dev/test rw\n21 10 8:1 /other /alias rw - ext4 /dev/test rw\n30 10 8:1 /srv/bays/one/space\\040name /space\\040mount rw - ext4 /dev/test rw\n";

@@ -40,8 +40,8 @@ else:os.link(outside,p/'big.bin')
         app.record('destination link rejected',kind=kind)
     # Changing the credential on listener restart revokes old password only by operator action.
     new='different-credential-24chars'
-    job=sec.server(dest,password=new);snapshot=app.snapshot(B,dest);r=sec.put(source);assert r['code']!=0 and app.wait(job)['code']!=0;sec.unchanged(snapshot,dest)
-    job=sec.server(dest,password=new);r=sec.put(source,password=new);app.stats(r);assert app.wait(job)['code']==0;app.record('operator credential rotation and listener restart')
+    job=sec.server(dest,password=new);snapshot=app.snapshot(B,dest);r=sec.put(source);assert r['code']!=0;sec.rejected_handshake(job);sec.unchanged(snapshot,dest)
+    r=sec.put(source,password=new);app.stats(r);assert app.wait(job)['code']==0;app.record('operator credential rotation and listener restart, rejected old password leaves listener available')
     # Receiver mount boundaries and unsupported virtual filesystems fail closed.
     r=app.command(B,['hash','/']);assert r['code']!=0,r
     r=app.command(B,['hash','/proc']);assert r['code']!=0 and 'unsupported' in r['err'],r
@@ -63,7 +63,7 @@ with f.open('r+b') as out:out.truncate(16*1024*1024*1024)
 ''',bytequota)
     job=sec.server(bytequota,quals=['merge']);r=sec.put(source);assert r['code']!=0 and app.wait(job)['code']!=0;app.record('16GiB prospective private-state quota')
     # Frame role reflection is rejected before roots are touched.
-    job=sec.server(dest);snapshot=app.snapshot(B,dest);sec.proxy('role');r=sec.put(source,port=40402);assert r['code']!=0 and app.wait(job)['code']!=0;sec.unchanged(snapshot,dest);app.record('role reflection rejects unauthenticated session')
+    job=sec.server(dest);snapshot=app.snapshot(B,dest);sec.proxy('role');r=sec.put(source,port=40402);assert r['code']!=0;sec.rejected_handshake(job);sec.unchanged(snapshot,dest);app.stats(sec.put(source));assert app.wait(job)['code']==0;app.record('role reflection rejects unauthenticated session, then valid transfer succeeds')
     # Source insertion correctness; fixed blocks may retransmit nearly all shifted content.
     shifted=f'{BASE}/shift-source';app.fixture(A,shifted,2_000_000)
     target=f'{BASE}/shift-target';sec.mkdir(B,target)

@@ -51,8 +51,12 @@ p=pathlib.Path(sys.argv[1]);p.write_text(sys.argv[2]);p.chmod(0o600)
                 if backup:
                     # A failed unauthenticated session must not terminate the listener.
                     assert app.logs(job)['code'] == '', app.logs(job)
-                else:
+                elif mode.startswith('stage-6-'):
+                    # Listener already sent its final ready; its authenticated
+                    # transfer fails when the proxy closes the connection.
                     assert app.wait(job)['code'] != 0, (mode, app.logs(job))
+                else:
+                    security.rejected_handshake(job)
                 assert [app.snapshot(B, p) for p in (dest, other)] == before, (backup, mode)
                 app.record('crypto handshake fault rejected', backup=backup, mode=mode, bays_unchanged=True)
             finally:
