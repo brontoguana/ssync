@@ -2,6 +2,7 @@
 
 ## 4.1.6 — 2026-11-19
 
+- Publish the tested Linux x86_64 executable. Verify all six public downloads, the README installer, and a real 4.1.5-to-4.1.6 upgrade in the disposable lab.
 - Report `Lock held by: PID …` and the process name when available in the receiving peer's busy-destination log. Keep process details local.
 - Correlate authenticated ordinary and backup transfers with a shared nine-character log ID. Report the same failure summary on both updated peers, identify the client or server and data direction, and keep full local details at the origin. Negotiate diagnostics and final confirmation while retaining transfer compatibility with 4.1.4 and 4.1.5.
 - Document the exact-root advisory lock and verify that killing a receiver during a copy releases the lock and leaves its partial available for resume. Release the in-process backup bay reservation even if its worker panics.

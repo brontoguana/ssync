@@ -276,3 +276,21 @@ receiver killed partway through a copy released the exact-root lock immediately.
 The retry reused 800,000 staged bytes and verified the result. Receiver disk
 headroom checks preserved existing files and reused private partial data once
 space was freed. Raw evidence is in ignored `target/release-416/` and `DEBUGLOG.md`.
+
+All 13 ordinary application, 14 permission and 30 backup cases passed. Twelve
+mixed-version cases passed with the public 4.1.4 and 4.1.5 executables, covering
+ordinary uploads and downloads and backup in both version arrangements.
+
+### 4.1.6 public delivery
+
+[SSync v4.1.6](https://github.com/brontoguana/ssync/releases/tag/v4.1.6) points
+to source commit `df89754ae080fc853bea8ae583368de12dcbfc02`. All six anonymous
+downloads matched the prepared checksums and sizes. The archive contains the
+tested executable with SHA-256
+`e25bc06b50f80772bae5f571006bb4dadf02ddb8cf275ae000083d20e970c1d4`,
+the README, licence and third-party notices.
+
+The disposable rootless peer passed the exact README bootstrap, a public
+4.1.5-to-4.1.6 upgrade, already-current reporting and uninstall. The temporary
+egress network was removed. Raw receipts and smoke results are in ignored
+`target/release-416/`.
