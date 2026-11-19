@@ -1,6 +1,6 @@
 # SSync validation and delivery history
 
-Current release: **4.1.5**; see [the listener and disk-headroom release gate](#415-listener-and-disk-headroom-release-gate--2026-11-18).
+Current release: **4.1.6**. See [the transfer diagnostics release gate](#416-transfer-diagnostics-release-gate--2026-11-19).
 
 **SSync 4.0.0 is published and the public delivery smoke passes.** The public repository is [brontoguana/ssync](https://github.com/brontoguana/ssync), with [release v4.0.0](https://github.com/brontoguana/ssync/releases/tag/v4.0.0) pointing to source commit `decf099c73ee1df6424f35b87e7ca767853b1236`. On 2026-10-13, all six downloaded release assets matched the prepared files and SHA-256 manifest. `tests/podman/public_smoke.py --tag v4.0.0` downloaded and verified the public binary, installed it in the existing isolated peer, queried the real public updater (current/available 4.0.0, release details and explicit up-to-date result), and uninstalled it. No host files were mounted; the temporary egress network was removed. Raw evidence is in ignored `target/public-smoke.json` and `target/public-smoke-run.log`.
 
@@ -195,3 +195,84 @@ The disk cutoff is filesystem-wide and best effort under concurrent allocations,
 Published [v4.1.5](https://github.com/brontoguana/ssync/releases/tag/v4.1.5) from exact source commit `17a939bc88b6b28a7fe582bc757e488a2060aa39`. All six anonymous public downloads match their prepared SHA-256 hashes and sizes. The GitHub tag resolves to that source commit, and the binary archive contains the exact tested executable plus README, licence and dependency notices. The clean source archive includes the new regression runner and excludes private/debug/reference-import artifacts.
 
 The disposable rootless peer passed checksum-verified public download, root-owned installation, a real installed **4.1.4-to-4.1.5** public update, already-current reporting, uninstall and the exact README bootstrap. The temporary egress network and installed executable were removed. No production installation was upgraded. Evidence: ignored `target/release-415/public-receipt.json`, `prepared-manifest.json`, `public-smoke.json`, `public-smoke.log` and `DEBUGLOG.md`. This documentation follow-up leaves the source tag and tested executable unchanged.
+
+## 4.1.5 deleted-but-open file review — 2026-11-18
+
+Reviewed published production binary SHA-256
+`86789fc5049cf7351fe9cf1324111fb3fda8ea04f5c0e13b6a2f09ab5c1a6c53`
+at checkout `2629efb`, with no runtime changes. The Java report concerned open
+files with link count zero retaining disk allocation. No equivalent persistent
+leak was found in the native file-lifetime review or these bounded Linux tests.
+
+`tests/podman/handles.py` exercises two labelled, isolated rootless peers, without
+host mounts or production listeners. It samples `/proc/PID/fd` link counts,
+unique allocated bytes by device/inode, mappings, descriptors, threads and
+filesystem free blocks. This checks the deleted/open condition reported by
+`lsof +L1`, without needing lsof in the peers. An intentional 8,003,584-byte
+allocated/unlinked file validates detection and reclamation on close.
+
+Passing runs covered 110 transfer attempts:
+
+| Scenario | Attempts | Result |
+| --- | ---: | --- |
+| Persistent accept: replacements and recursive mirror deletion | 40 | Stable disk use; no retained deleted handles |
+| Identical-file comparisons | 10 | No handle growth |
+| Authenticated missing-source errors | 10 | Listener returned to baseline |
+| Mid-file disconnect followed by verified partial resume | 6 | Named partials closed; recovery succeeded |
+| External destination unlink, rejection and retry | 2 | 6,000,640 transient deleted bytes, then zero |
+| Persistent offer: source replacements and downloads | 20 | No retained source handles |
+| External source unlink, rejection and retry | 2 | 12,001,280 transient deleted bytes, then zero |
+| Persistent backup: replacements and mirror deletion | 20 | Stable disk use; no retained deleted handles |
+
+All three persistent listener types returned to **4 descriptors and 2 threads**
+after sessions, with **zero deleted-open bytes and zero deleted mappings**.
+Free space was exactly constant across the measured accept and backup
+replacement loops. Source and destination canaries/content were checked;
+listeners stayed running between iterations. The unlink races proved that a
+handle can briefly retain an unlinked inode while actively used, then closes on
+transfer failure. No restart/cleanup was needed to release these handles.
+
+Source review: `fs.rs` immediately wraps successful raw opens in owning `File`
+values. `transfer.rs` owns old/staged files per file and joins scoped producer/
+comparison threads on success and error; cloned comparison handles do not live
+past the scope. Root locks are tied to root descriptors, directory permission
+records contain identities rather than held descriptors, and the listener has
+no persistent file-handle cache. `runtime.rs` removes socket clones through
+`SocketGuard`; authentication watchdog clones are released after guard-triggered
+thread joins. No unowned raw descriptor or file-backed mapping was found in
+these paths.
+
+Interrupted or abandoned transfers can retain **named**, closed `.ssync-state`
+partials. They occupy visible disk space for resumption and are not the reported
+deleted-open leak. Retrying identical content consumes the partial; changing the
+source can leave the old partial until local removal or the existing state
+limits require attention. This review does not establish the original Java
+cause and is not a multi-day soak or a production deployment measurement.
+
+`cargo test --locked`: 37 native/parser tests passed; two existing optional
+strace fault probes remain ignored. Python syntax and Git whitespace checks
+passed. Raw evidence: ignored `target/podman-handles/{samples.jsonl,run.log,
+source-unlink.log,results.json,native.log}`. Initial test-only assertion
+corrections and their raw outputs are preserved in `DEBUGLOG.md`. The base run
+passed 108 attempts, followed by the targeted two-attempt source-unlink case.
+No runtime change, commit or release was made for this investigation.
+
+## 4.1.6 transfer diagnostics release gate — 2026-11-19
+
+The versioned, production-only Linux x86_64 musl build reported `SSync v4.1.6`.
+Native and parser tests passed (39 total, with two optional strace probes
+ignored), along with formatting and warnings-denied lint.
+
+Loopback tests verified matching failure IDs and summaries in all four
+client/server and send/receive combinations. An interrupted backup released
+its bay for a verified retry on the same server while another bay remained
+available. A Btrfs test verified the `Lock held by: PID …` wording, including
+the process name when visible, when `fstat` and `/proc/locks` reported different
+device IDs for the same lock. The sender received the same failure ID with no
+holder PID or process name. The receiver kept its existing destination content.
+
+The disposable lab verified the new wording during live lock contention. A
+receiver killed partway through a copy released the exact-root lock immediately.
+The retry reused 800,000 staged bytes and verified the result. Receiver disk
+headroom checks preserved existing files and reused private partial data once
+space was freed. Raw evidence is in ignored `target/release-416/` and `DEBUGLOG.md`.

@@ -139,14 +139,16 @@ fn run() -> Result<()> {
         "allocation" => channel.send_bytes(&vec![0; ssync::auth::FRAME_LIMIT + 1])?,
         _ => bail!("unknown test mode"),
     }
-    // Most malicious messages must result in immediate peer close, never an ACK.
+    // A rejected request ends the session with a terminal report or a closed connection.
     match channel.recv_bytes() {
-        Err(_) => {
-            println!("Rejected");
-            Ok(())
-        }
-        Ok(_) => bail!("malicious request accepted"),
+        Err(_) => {}
+        Ok(bytes) => ensure!(
+            matches!(serde_json::from_slice(&bytes), Ok(Message::Failed { .. })),
+            "unexpected response to rejected request"
+        ),
     }
+    println!("Rejected");
+    Ok(())
 }
 fn main() {
     if let Err(e) = run() {

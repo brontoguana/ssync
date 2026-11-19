@@ -16,17 +16,17 @@
 - `src/links.rs` — bounded configuration-name projection, source-link planning, no-follow descriptions, hardlink relationships and projected-name collision checks.
 - `tests/podman/links.py` — source symlink/hardlink descriptions, recreation, filters, collisions, mode override precedence and backups.
 - `src/cli.rs` — local directory policy, qualifiers, Java-compatible aliases, password inputs, structured/topic help, guidance and local-only commands.
-- `src/auth.rs` — unbiased Base58 generation, OPAQUE/Argon2id, Noise confirmation and bounded framing.
-- `src/fs.rs` — Linux openat2 capabilities, trusted write ancestry, device/mount-alias checks, reserved-state scan exclusions, configured-credential identity protection, durable directory operations, private receiving partials, receiver capacity checks and atomic replacement.
+- `src/auth.rs` — unbiased Base58 generation, OPAQUE/Argon2id, Noise confirmation, shared transfer IDs, diagnostics negotiation and bounded framing.
+- `src/fs.rs` — Linux openat2 capabilities, trusted write ancestry, device/mount-alias checks, reserved-state scan exclusions, configured-credential identity protection, durable directory operations, private receiving partials, receiver capacity checks, exact-root advisory locks and atomic replacement.
 - `tests/podman/config_protection.py` — inert configuration copies, projected collisions, mirror preservation, reserved-state exclusions, password-file/alias protection, dry runs and backups.
-- `tests/podman/permissions.py` — source file/directory modes, unchanged contents, failure finalization, read-only directories, dry runs, backup modes and legacy-peer refusal.
-- `src/transfer.rs` — fixed 200,000-byte pipeline, overlapped comparison/streaming, verified resume, layouts, filters and verified-state deletion.
+- `tests/podman/permissions.py` — source file/directory modes, unchanged contents, failure finalization, per-entry error reports, read-only directories, dry runs, backup modes and legacy-peer refusal.
+- `src/transfer.rs` — fixed 200,000-byte pipeline, verified resume, layouts, filters, verified-state deletion and authenticated per-entry failure reports.
 - `src/backup.rs` — private line configs/templates, password-selected upload-only bays, bounded independent multi-server backup cycles.
 - `install.sh` — checksum-verified latest Linux release bootstrap, then native installation.
 - `tests/podman/bootstrap.py` — installer checksum/download failure preservation in a disposable peer.
-- `tests/podman/compatibility.py` — legacy ordinary/backup peer refusal before transfer data changes.
+- `tests/podman/compatibility.py` — ordinary/backup interoperability with 4.1.4 and later, plus older peer refusal before data changes.
 - `tests/podman/backup.py` — real backup fanout, defaults, isolation, failures, encryption, resume and malicious peer tests.
-- `src/runtime.rs` — listening/connecting independently of data direction, persistent operation, per-source handshake admission, authenticated transfer slots, cancellation and config workers.
+- `src/runtime.rs` — listening/connecting independently of data direction, persistent operation, per-source handshake admission, authenticated transfer slots, cancellation and config failure reporting by line.
 - `src/management.rs` — native local install/update/uninstall and ownership attached atomically to the executable.
 - `tests/parsers.rs` — 20,000 seeded parser mutations and path-contract boundary tests.
 - `tests/TEST_MATRIX.md` — required feature/security gate inventory and disposition references.
@@ -53,4 +53,5 @@ Local private references, not published or needed for native builds:
 - `tests/podman/longrun.py` — encrypted progressing transfer beyond socket idle deadline, with deterministic byte-rate proxy delay.
 - `tests/podman/public_smoke.py` — post-publication integrity/native install/update/uninstall smoke in the existing disposable peer, with scoped temporary egress and cleanup.
 
-- `tests/podman/receiver_limits.py` — idle-handshake isolation, disk cutoff, safe resume and backup headroom/concurrency regressions.
+- `tests/podman/receiver_limits.py` — idle-handshake isolation, receiver lock, crash recovery, shared failure IDs, disk-cutoff messages and safe resume and backup headroom/concurrency regressions.
+- `tests/podman/handles.py` — persistent send/receive/backup descriptor and disk-space regressions, with deleted-file positive control, interruptions, resume and external unlink races.

@@ -3,16 +3,168 @@ use anyhow::{Context, Result, ensure};
 use std::{
     ffi::CString,
     fs::{File, Metadata},
-    io::{Read, Seek, SeekFrom},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom},
     os::{
         fd::{AsRawFd, FromRawFd},
-        unix::fs::{MetadataExt, PermissionsExt},
+        unix::fs::{FileTypeExt, MetadataExt, PermissionsExt},
     },
     path::{Path, PathBuf},
 };
 
 pub const STATE: &str = ".ssync-state";
 pub const MAX_ENTRIES: usize = 10_000;
+
+#[derive(Debug)]
+pub(crate) enum FileFailure {
+    DestinationBusy,
+    DiskHeadroom,
+    WrongType,
+    MultipleLinks(u64),
+    UnexpectedEntry(EntryType),
+    DirectoryPolicy,
+    UnsafeState,
+    Changed,
+    UnsafePath,
+}
+impl std::fmt::Display for FileFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::MultipleLinks(count) => {
+                return write!(
+                    f,
+                    "regular file has {count} hard links; SSync requires a single link"
+                );
+            }
+            Self::UnexpectedEntry(kind) => {
+                return write!(f, "found {kind} where SSync expected a regular file");
+            }
+            Self::DestinationBusy => {
+                "destination root is busy; another transfer or process holds its lock"
+            }
+            Self::DiskHeadroom => {
+                "receiver filesystem would exceed 99% usage; free space before retrying"
+            }
+            Self::WrongType => "unexpected file type",
+            Self::DirectoryPolicy => "directory violates the local sole-owned policy",
+            Self::UnsafeState => "unsafe private resume state",
+            Self::Changed => "file or directory changed",
+            Self::UnsafePath => "unsafe path",
+        })
+    }
+}
+impl std::error::Error for FileFailure {}
+
+fn flock_record(line: &str) -> Option<(u32, libc::dev_t, u64)> {
+    let mut fields = line.split_ascii_whitespace();
+    fields.next()?; // Record number.
+    if fields.next()? != "FLOCK" {
+        return None; // Includes blocked requests, marked with `->`.
+    }
+    let pid = fields.nth(2)?.parse::<u32>().ok()?; // Skip ADVISORY and READ/WRITE.
+    let mut identity = fields.next()?.split(':');
+    let major = u32::from_str_radix(identity.next()?, 16).ok()?;
+    let minor = u32::from_str_radix(identity.next()?, 16).ok()?;
+    let inode = identity.next()?.parse().ok()?;
+    (pid > 0).then_some((pid, libc::makedev(major, minor), inode))
+}
+
+fn flock_holder_pid(
+    locks: impl BufRead,
+    device: libc::dev_t,
+    inode: u64,
+    verify_descriptor: impl Fn(u32, libc::dev_t) -> bool,
+) -> Option<u32> {
+    locks
+        .lines()
+        .map_while(std::io::Result::ok)
+        .filter_map(|line| flock_record(&line))
+        .find_map(|(pid, lock_device, lock_inode)| {
+            (lock_inode == inode && (lock_device == device || verify_descriptor(pid, lock_device)))
+                .then_some(pid)
+        })
+}
+
+// Btrfs can report a subvolume-specific st_dev while /proc/locks uses the
+// superblock's device. Verify the descriptor rather than matching inode alone.
+fn process_holds_flock(pid: u32, lock_device: libc::dev_t, dir: &Metadata) -> bool {
+    let Ok(descriptors) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
+        return false;
+    };
+    descriptors.flatten().any(|fd| {
+        let Ok(target) = std::fs::metadata(fd.path()) else {
+            return false;
+        };
+        if (target.dev(), target.ino()) != (dir.dev(), dir.ino()) {
+            return false;
+        }
+        let path = format!("/proc/{pid}/fdinfo/{}", fd.file_name().to_string_lossy());
+        let Ok(info) = read_kernel_file(&path, 8192) else {
+            return false;
+        };
+        String::from_utf8_lossy(&info)
+            .lines()
+            .filter_map(|line| flock_record(line.strip_prefix("lock:")?))
+            .any(|record| record == (pid, lock_device, dir.ino()))
+    })
+}
+
+fn describe_flock_holder(dir: &File) -> Option<String> {
+    let metadata = dir.metadata().ok()?;
+    let locks = BufReader::new(File::open("/proc/locks").ok()?);
+    let pid = flock_holder_pid(locks, metadata.dev(), metadata.ino(), |pid, device| {
+        process_holds_flock(pid, device, &metadata)
+    })?;
+    let mut holder = format!("Lock held by: PID {pid}");
+    if let Ok(name) = std::fs::read_to_string(format!("/proc/{pid}/comm")) {
+        let name = name.strip_suffix('\n').unwrap_or(&name);
+        holder.push_str(&format!(", process {name:?}"));
+    }
+    Some(holder)
+}
+
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) enum EntryType {
+    Symlink,
+    Directory,
+    Fifo,
+    Socket,
+    BlockDevice,
+    CharacterDevice,
+    SpecialFile,
+}
+impl EntryType {
+    fn of(kind: std::fs::FileType) -> Self {
+        if kind.is_symlink() {
+            Self::Symlink
+        } else if kind.is_dir() {
+            Self::Directory
+        } else if kind.is_fifo() {
+            Self::Fifo
+        } else if kind.is_socket() {
+            Self::Socket
+        } else if kind.is_block_device() {
+            Self::BlockDevice
+        } else if kind.is_char_device() {
+            Self::CharacterDevice
+        } else {
+            Self::SpecialFile
+        }
+    }
+}
+impl std::fmt::Display for EntryType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Symlink => "a symbolic link",
+            Self::Directory => "a directory",
+            Self::Fifo => "a FIFO (named pipe)",
+            Self::Socket => "a Unix socket",
+            Self::BlockDevice => "a block device",
+            Self::CharacterDevice => "a character device",
+            Self::SpecialFile => "an unsupported special file",
+        })
+    }
+}
+
 // Like df, measure usage against used blocks plus the blocks available to
 // unprivileged writers, leaving any filesystem-reserved blocks untouched.
 fn enough_receive_space(blocks: u128, free: u128, available: u128, requested: u128) -> bool {
@@ -44,7 +196,7 @@ pub(crate) fn check_receive_space(file: &File, bytes: usize) -> Result<()> {
             u128::from(stat.f_bavail.min(stat.f_bfree)),
             requested,
         ),
-        "receiver filesystem would exceed 99% usage; free space before retrying"
+        FileFailure::DiskHeadroom
     );
     Ok(())
 }
@@ -217,7 +369,7 @@ pub struct DirectoryMode {
     pub path: String,
     dev: u64,
     ino: u64,
-    mode: u32,
+    pub(crate) mode: u32,
 }
 pub fn validate_mode(mode: u32) -> Result<()> {
     ensure!(mode & !0o777 == 0, "unsupported permission bits");
@@ -238,10 +390,11 @@ fn chmod(file: &File, mode: u32) -> Result<()> {
 impl Root {
     pub fn validate_directory_mode(&self, mode: u32) -> Result<()> {
         validate_mode(mode)?;
-        ensure!(
-            !self.sole_owned || mode & 0o022 == 0,
-            "source directory permissions conflict with local sole-owned policy"
-        );
+        if self.sole_owned && mode & 0o022 != 0 {
+            return Err(FileFailure::DirectoryPolicy).context(format!(
+                "source directory mode {mode:04o} permits group or other users to write"
+            ));
+        }
         Ok(())
     }
     pub fn prepare_directory_mode(&self, path: &str, mode: u32) -> Result<DirectoryMode> {
@@ -268,7 +421,7 @@ impl Root {
         let meta = dir.metadata()?;
         ensure!(
             meta.dev() == directory.dev && meta.ino() == directory.ino,
-            "destination directory changed before permission update"
+            FileFailure::Changed
         );
         chmod(&dir, directory.mode).with_context(|| {
             format!(
@@ -294,7 +447,7 @@ impl Root {
         ensure!(
             Some(identity(&meta)) == *expected
                 && self.metadata(path)?.as_ref().map(identity) == *expected,
-            "destination changed before permission update"
+            FileFailure::Changed
         );
         chmod(file, mode).with_context(|| format!("file permissions {:?}", self.path.join(path)))
     }
@@ -322,12 +475,13 @@ impl Root {
                 std::mem::size_of::<OpenHow>(),
             )
         };
-        ensure!(
-            fd >= 0,
-            "cannot securely open root {:?}: {} (Linux 5.6+ required)",
-            path,
-            std::io::Error::last_os_error()
-        );
+        if fd < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ENOSYS) {
+                return Err(error).context("secure path handling requires Linux 5.6 or newer");
+            }
+            return Err(error).with_context(|| format!("cannot securely open root {path:?}"));
+        }
         let dir = unsafe { File::from_raw_fd(fd as i32) };
         secure_dir(&dir.metadata()?, sole_owned)
             .with_context(|| format!("directory {:?}", path))?;
@@ -365,33 +519,39 @@ impl Root {
             Err(e) => Err(e.into()),
         }
     }
+    // Kernel advisory lock on the open directory, held until every duplicate
+    // of this descriptor closes. There is no lock file to remove after a crash.
     pub fn lock(&self) -> Result<()> {
+        let context = || format!("locking destination root {:?}", self.path);
         self.check_writable()?;
-        ensure!(
-            unsafe { libc::flock(self.dir.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
-            "destination root is busy {:?}: {}",
-            self.path,
-            std::io::Error::last_os_error()
-        );
-        Ok(())
+        if unsafe { libc::flock(self.dir.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            return Err(FileFailure::DestinationBusy).with_context(|| {
+                let holder = describe_flock_holder(&self.dir)
+                    .unwrap_or_else(|| "lock holder PID unavailable".into());
+                format!("{} ({holder})", context())
+            });
+        }
+        Err(error).with_context(context)
     }
     pub fn metadata(&self, path: &str) -> Result<Option<Metadata>> {
         if !path.is_empty() {
             valid(path)?;
         }
-        (|| {
+        (|| -> Result<_> {
             match beneath(&self.dir, path, libc::O_PATH, 0) {
-            Ok(f) => {
-                let m = f.metadata()?;
-                ensure!(
-                    m.is_dir() || (m.is_file() && m.nlink() == 1),
-                    "links/special files are unsupported (regular files require exactly one hard link; found {} links)",
-                    m.nlink()
-                );
-                Ok(Some(m))
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e.into()),
+                Ok(f) => {
+                    let m = f.metadata()?;
+                    if !m.is_dir() {
+                        regular(&m)?;
+                    }
+                    Ok(Some(m))
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(e.into()),
             }
         })()
         .with_context(|| format!("cannot inspect transfer path {:?}", self.path.join(path)))
@@ -411,11 +571,11 @@ impl Root {
             self.dir(split(path).0)?;
         }
         let meta = beneath(&self.dir, path, libc::O_PATH, 0)?.metadata()?;
-        ensure!(
-            meta.is_dir() || meta.is_file() || meta.is_symlink(),
-            "unsupported special source file {:?}",
-            self.path.join(path)
-        );
+        if !(meta.is_dir() || meta.is_file() || meta.is_symlink()) {
+            return Err(FileFailure::WrongType).with_context(|| {
+                format!("unsupported special source file {:?}", self.path.join(path))
+            });
+        }
         Ok(meta)
     }
     pub fn read_source(&self, path: &str) -> Result<File> {
@@ -467,6 +627,7 @@ impl Root {
         if self.sole_owned {
             trusted_ancestor(&parent.metadata()?)?;
         }
+        let mut ancestor = PathBuf::from("/");
         for part in self.path.components() {
             let std::path::Component::Normal(part) = part else {
                 continue;
@@ -479,18 +640,23 @@ impl Root {
                     libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
                 )
             };
-            ensure!(fd >= 0, "cannot verify destination ancestors");
+            ancestor.push(part);
+            if fd < 0 {
+                return Err(std::io::Error::last_os_error())
+                    .with_context(|| format!("cannot verify destination ancestor {ancestor:?}"));
+            }
             parent = unsafe { File::from_raw_fd(fd) };
             if self.sole_owned {
-                trusted_ancestor(&parent.metadata()?)?;
+                trusted_ancestor(&parent.metadata()?)
+                    .with_context(|| format!("checking destination ancestor {ancestor:?}"))?;
             }
         }
         let current = parent.metadata()?;
         let pinned = self.dir.metadata()?;
-        ensure!(
-            current.dev() == pinned.dev() && current.ino() == pinned.ino(),
-            "destination root changed"
-        );
+        if current.dev() != pinned.dev() || current.ino() != pinned.ino() {
+            return Err(FileFailure::Changed)
+                .with_context(|| format!("destination root changed at {:?}", self.path));
+        }
         secure_dir(&pinned, self.sole_owned)?;
         if self.sole_owned {
             trusted_owner(&pinned)?;
@@ -524,13 +690,15 @@ impl Root {
                     prefix.push('/');
                 }
                 prefix.push_str(part);
-                dir = beneath(&self.dir, &prefix, libc::O_RDONLY | libc::O_DIRECTORY, 0)?;
+                let context = || format!("opening directory {:?}", self.path.join(&prefix));
+                dir = beneath(&self.dir, &prefix, libc::O_RDONLY | libc::O_DIRECTORY, 0)
+                    .with_context(context)?;
                 secure_dir(&dir.metadata()?, self.sole_owned)
                     .with_context(|| format!("directory {:?}", self.path.join(&prefix)))?;
                 if writable && self.sole_owned {
-                    trusted_owner(&dir.metadata()?)?;
+                    trusted_owner(&dir.metadata()?).with_context(context)?;
                 }
-                case_sensitive(&dir)?;
+                case_sensitive(&dir).with_context(context)?;
             }
         }
         Ok(dir)
@@ -539,17 +707,16 @@ impl Root {
         let dir = self.dir(path)?;
         let mut names = Vec::new();
         for entry in std::fs::read_dir(format!("/proc/self/fd/{}", dir.as_raw_fd()))? {
-            let entry = entry?;
-            let name = entry
-                .file_name()
+            let name = entry?.file_name();
+            let name = name
                 .into_string()
-                .map_err(|_| anyhow::anyhow!("non-UTF8 filename unsupported"))?;
+                .map_err(|name| anyhow::anyhow!("non-UTF-8 filename {name:?} is unsupported"))?;
             if name == STATE {
                 // Internal state is never transfer data. Do not inspect its owner,
                 // permissions or contents while scanning a source or mirror scope.
                 continue;
             }
-            valid(&name)?;
+            valid(&name).with_context(|| format!("invalid entry {:?}", self.path.join(&name)))?;
             names.push(name);
             ensure!(names.len() <= MAX_ENTRIES, "too many entries");
         }
@@ -573,7 +740,12 @@ impl Root {
             if rc != 0 {
                 let e = std::io::Error::last_os_error();
                 if e.kind() != std::io::ErrorKind::AlreadyExists {
-                    return Err(e.into());
+                    return Err(e).with_context(|| {
+                        format!(
+                            "creating directory {:?}",
+                            self.path.join(&prefix).join(part)
+                        )
+                    });
                 }
             } else {
                 // A successful backup must retain newly created (including empty) directories.
@@ -600,10 +772,12 @@ impl Root {
         }
         let dir = beneath(&self.dir, STATE, libc::O_RDONLY | libc::O_DIRECTORY, 0)?;
         let meta = dir.metadata()?;
-        ensure!(
-            meta.uid() == unsafe { libc::geteuid() } && meta.mode() & 0o777 == 0o700,
-            "unsafe partial-state directory"
-        );
+        if meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o777 != 0o700 {
+            return Err(FileFailure::UnsafeState).with_context(|| format!(
+                "partial-state directory {:?} must be owned by the receiving user and have mode 0700 (found owner UID {}, mode {:04o})",
+                self.path.join(STATE), meta.uid(), meta.mode() & 0o777
+            ));
+        }
         let count = std::fs::read_dir(format!("/proc/self/fd/{}", dir.as_raw_fd()))?.count();
         ensure!(
             count <= 128,
@@ -640,10 +814,12 @@ impl Root {
         )?;
         let meta = file.metadata()?;
         regular(&meta)?;
-        ensure!(
-            meta.uid() == unsafe { libc::geteuid() } && meta.mode() & 0o777 == 0o600,
-            "unsafe partial file"
-        );
+        if meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o777 != 0o600 {
+            return Err(FileFailure::UnsafeState).with_context(|| format!(
+                "partial file must be owned by the receiving user and have mode 0600 (found owner UID {}, mode {:04o})",
+                meta.uid(), meta.mode() & 0o777
+            ));
+        }
         ensure!(
             !self
                 .password_file
@@ -685,31 +861,28 @@ impl Root {
         expected: &Option<Identity>,
     ) -> Result<()> {
         valid(target)?;
-        ensure!(
-            &self.metadata(target)?.as_ref().map(identity) == expected,
-            "destination changed during transfer"
-        );
+        if &self.metadata(target)?.as_ref().map(identity) != expected {
+            return Err(FileFailure::Changed).context("destination changed during transfer");
+        }
         let (parent, name) = split(target);
         let dir = self.write_dir(parent)?;
         // Recheck final type without following it, and directory identity relative to root.
-        ensure!(
-            &self.metadata(target)?.as_ref().map(identity) == expected,
-            "destination changed before commit"
-        );
+        if &self.metadata(target)?.as_ref().map(identity) != expected {
+            return Err(FileFailure::Changed).context("destination changed before commit");
+        }
         let from = CString::new(id)?;
         let to = CString::new(name)?;
-        ensure!(
-            unsafe {
-                libc::renameat(
-                    state.as_raw_fd(),
-                    from.as_ptr(),
-                    dir.as_raw_fd(),
-                    to.as_ptr(),
-                )
-            } == 0,
-            "atomic replacement failed: {}",
-            std::io::Error::last_os_error()
-        );
+        if unsafe {
+            libc::renameat(
+                state.as_raw_fd(),
+                from.as_ptr(),
+                dir.as_raw_fd(),
+                to.as_ptr(),
+            )
+        } != 0
+        {
+            return Err(std::io::Error::last_os_error()).context("atomic replacement failed");
+        }
         dir.sync_all()?;
         state.sync_all()?;
         Ok(())
@@ -742,21 +915,20 @@ impl Root {
     pub fn remove(&self, path: &str, expected: &Identity) -> Result<()> {
         valid(path)?;
         let meta = self.metadata(path)?.context("deletion entry disappeared")?;
-        ensure!(&identity(&meta) == expected, "deletion entry changed");
+        ensure!(&identity(&meta) == expected, FileFailure::Changed);
         let (parent, name) = split(path);
         let dir = self.write_dir(parent)?;
         let name = CString::new(name)?;
-        ensure!(
-            unsafe {
-                libc::unlinkat(
-                    dir.as_raw_fd(),
-                    name.as_ptr(),
-                    if meta.is_dir() { libc::AT_REMOVEDIR } else { 0 },
-                )
-            } == 0,
-            "safe deletion failed: {}",
-            std::io::Error::last_os_error()
-        );
+        if unsafe {
+            libc::unlinkat(
+                dir.as_raw_fd(),
+                name.as_ptr(),
+                if meta.is_dir() { libc::AT_REMOVEDIR } else { 0 },
+            )
+        } != 0
+        {
+            return Err(std::io::Error::last_os_error()).context("safe deletion failed");
+        }
         dir.sync_all()?;
         Ok(())
     }
@@ -765,17 +937,22 @@ pub fn split(path: &str) -> (&str, &str) {
     path.rsplit_once('/').unwrap_or(("", path))
 }
 fn secure_dir(m: &Metadata, sole_owned: bool) -> Result<()> {
-    ensure!(
-        m.is_dir() && (!sole_owned || m.mode() & 0o022 == 0),
-        "directory is writable by other users or not a directory"
-    );
+    ensure!(m.is_dir(), FileFailure::WrongType);
+    if sole_owned && m.mode() & 0o022 != 0 {
+        return Err(FileFailure::DirectoryPolicy).context(format!(
+            "directory is writable by other users (mode {:04o})",
+            m.mode() & 0o777
+        ));
+    }
     Ok(())
 }
 fn trusted_owner(m: &Metadata) -> Result<()> {
-    ensure!(
-        m.uid() == unsafe { libc::geteuid() } || m.uid() == 0,
-        "untrusted directory owner; writable destinations must be owned by the current user or root"
-    );
+    if m.uid() != unsafe { libc::geteuid() } && m.uid() != 0 {
+        return Err(FileFailure::DirectoryPolicy).context(format!(
+            "untrusted directory owner UID {}; writable destinations must be owned by the current user or root",
+            m.uid()
+        ));
+    }
     Ok(())
 }
 fn read_kernel_file(path: &str, limit: u64) -> Result<Vec<u8>> {
@@ -855,11 +1032,15 @@ fn trusted_ancestor(m: &Metadata) -> Result<()> {
     Ok(())
 }
 pub fn regular(m: &Metadata) -> Result<()> {
-    ensure!(
-        m.is_file() && m.nlink() == 1,
-        "only single-link regular files allowed"
-    );
-    Ok(())
+    let kind = m.file_type();
+    if !kind.is_file() {
+        return Err(FileFailure::UnexpectedEntry(EntryType::of(kind)).into());
+    }
+    match m.nlink() {
+        1 => Ok(()),
+        0 => Err(FileFailure::Changed).context("the regular file was unlinked during inspection"),
+        count => Err(FileFailure::MultipleLinks(count).into()),
+    }
 }
 pub fn digest(file: &mut File) -> Result<blake3::Hash> {
     file.seek(SeekFrom::Start(0))?;
@@ -873,10 +1054,9 @@ pub fn digest(file: &mut File) -> Result<blake3::Hash> {
         }
         hash.update(&buf[..n]);
     }
-    ensure!(
-        before == identity(&file.metadata()?),
-        "file changed while hashing"
-    );
+    if before != identity(&file.metadata()?) {
+        return Err(FileFailure::Changed).context("file changed while hashing");
+    }
     Ok(hash.finalize())
 }
 pub fn open_local_file(path: &Path) -> Result<File> {
@@ -1072,6 +1252,32 @@ mod tests {
         drop(lock);
     }
     #[test]
+    fn lock_holder_lookup_matches_the_held_lock_and_directory_identity() {
+        let locks = b"\
+1: POSIX ADVISORY WRITE 11 00:2a:123 0 EOF\n\
+2: FLOCK ADVISORY WRITE 22 01:2a:123 0 EOF\n\
+3: FLOCK ADVISORY WRITE 33 00:2b:123 0 EOF\n\
+4: FLOCK ADVISORY WRITE 44 00:2a:124 0 EOF\n\
+5: -> FLOCK ADVISORY WRITE 55 00:2a:123 0 EOF\n\
+6: FLOCK ADVISORY READ 0 00:2a:123 0 EOF\n\
+7: FLOCK ADVISORY READ 77 00:2a:123 0 EOF\n";
+        let device = libc::makedev(0, 0x2a);
+        assert_eq!(
+            flock_holder_pid(&locks[..], device, 123, |_, _| false),
+            Some(77)
+        );
+        assert_eq!(
+            flock_holder_pid(&locks[..], device, 125, |_, _| false),
+            None
+        );
+        assert_eq!(
+            flock_holder_pid(&locks[..], device, 123, |pid, lock_device| {
+                pid == 33 && lock_device == libc::makedev(0, 0x2b)
+            }),
+            Some(33)
+        );
+    }
+    #[test]
     fn rejected_entries_and_busy_roots_identify_the_path() {
         let temp = tempfile::tempdir().unwrap();
         let root = Root::with_policy(temp.path(), false).unwrap();
@@ -1080,19 +1286,23 @@ mod tests {
         symlink("file", temp.path().join("symlink")).unwrap();
         let fifo = CString::new(temp.path().join("fifo").as_os_str().as_encoded_bytes()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
-        for name in ["file", "alias", "symlink", "fifo"] {
+        for (name, reason) in [
+            ("file", "regular file has 2 hard links"),
+            ("alias", "regular file has 2 hard links"),
+            ("symlink", "found a symbolic link"),
+            ("fifo", "found a FIFO (named pipe)"),
+        ] {
             let error = format!("{:#}", root.metadata(name).unwrap_err());
             assert!(
                 error.contains(&format!("{:?}", temp.path().join(name))),
                 "{error}"
             );
+            assert!(error.contains(reason), "{error}");
             assert_eq!(
                 std::fs::read(temp.path().join("file")).unwrap(),
                 b"unchanged"
             );
         }
-        let error = format!("{:#}", root.metadata("file").unwrap_err());
-        assert!(error.contains("found 2 links"), "{error}");
         let other = Root::with_policy(temp.path(), false).unwrap();
         root.lock().unwrap();
         let error = format!("{:#}", other.lock().unwrap_err());

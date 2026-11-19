@@ -41,7 +41,11 @@ try:
                     count=frame(src)
                     if len(count)!=5 or not 1<=count[4]<=32:raise ValueError('bay count')
                     value=count+b''.join(frame(src) for _ in range(count[4]))
-                else:value=frame(src)
+                else:
+                    value=frame(src)
+                    # A split ready starts with an encrypted five-byte plaintext record.
+                    if i in (5,6) and len(value)==4+5+16:
+                        value+=frame(src)
                 captures.append(value.hex())
                 # Audit modes perturb one precise handshake stage, preserving other traffic.
                 if a.mode.startswith('stage-'):

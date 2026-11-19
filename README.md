@@ -10,7 +10,9 @@ Already installed? Run `sudo ssync update`.
 
 Native, password-authenticated file synchronization with fixed 200,000-byte deltas. Rust executable; no Java, Python or shell runtime required. Files and directories only: no script hooks or remote execution.
 
-Version **4.1.5** keeps one-shot listeners waiting after rejected handshakes, separates pending authentication from active transfer capacity, and stops receives before a write would exceed 99% of reported usable filesystem capacity. The cutoff is best effort across concurrent writers. Restart listeners after updating; 4.1.5 remains wire-compatible with 4.1.4.
+Version **4.1.6** adds shared transfer IDs and clearer failure reports, including the file or directory involved when available. It remains compatible with 4.1.4 and 4.1.5. Restart listeners after updating.
+
+Version **4.1.5** keeps one-shot listeners waiting after rejected handshakes, separates pending authentication from active transfer capacity, and stops receives before a write would exceed 99% of reported usable filesystem capacity. The cutoff is best effort across concurrent writers.
 
 Version **4.1.4** reproduces source read/write/execute permissions, adds file-mode overrides and topic help, describes source links as inert `.ssynclink` files, and copies `.ssync` configurations as `.ssyncbak`. Source `.ssync-state` and the configured password file are excluded. **Update both endpoints and restart listeners**: 4.1.4 refuses transfers with earlier versions before modifying transfer data.
 
@@ -81,6 +83,10 @@ ssync sole-owned backup-server /opt/backup-server.ssync
 Passwords require 16+ Unicode characters; generated passwords use 24 uniformly sampled Base58 characters, displayed as six groups of four. Credentials do not expire, and each connection derives fresh keys. Precedence is nonempty `SSYNC_PASSWORD`, then `SSYNC_PASSWORD_FILE`, then `SSYNC_PASSWORD_FD`, then `password@location`, then hidden connector prompt/generated listener credential. Inline credentials may be visible in process listings/history. A password file must be private and owned by the current user; one final LF/CRLF is file framing, while descriptor input is preserved exactly. Maximum secret size is 4096 UTF-8 bytes. The configured `SSYNC_PASSWORD_FILE` may have any filename. Ordinary and backup scans exclude that file and its hard-link aliases; local receiver guards also preserve it against replacement, permission changes and mirror deletion. This works even when a higher-priority password input is used. Files containing passwords that are not identified by this setting cannot be detected automatically: keep those outside transfer trees or use `skip:`. `.ssyncbak` copies retain configuration contents, which may contain inline credentials; protect their access accordingly.
 
 `.ssync` files contain quoted declarative transfer commands, one per line, and run concurrently. Only transfer operations are permitted; no shell expansion or execution. A shared-writable folder containing an ordinary `.ssync` configuration produces one warning and the commands still run. Use `ssync sole-owned file.ssync` to require trusted configuration directories and enable `sole-owned` for every local transfer in the file. Configuration files themselves must still be owned by the current user or root and cannot be group/other writable. Use `force` when unattended. `version`, `licenses`, `hash <directory>`, `deep <file>`, `scan <file>` and single-file inspection are local diagnostics. Hash output is BLAKE3 and intentionally differs from Java output.
+
+When both peers run 4.1.6, they log the same transfer ID, for example `P6T-FKF-8W4`. Look up that ID in either log to find the client or server that reported a failure and the affected entry, when known. A disconnect can prevent the error from reaching the other side. Versions 4.1.4 and 4.1.5 still transfer with a 4.1.6 peer and only the 4.1.6 peer logs the ID.
+
+A busy destination means an exclusive lock is already held on that exact receiving directory. The receiving peer logs `Lock held by: PID …` when Linux provides the holder. The Linux kernel releases the lock when the locking descriptors close, including when the process is killed. Interrupted transfers can leave private `.ssync-state` partial files for the next attempt to resume.
 
 ## Backup server and client
 

@@ -76,28 +76,9 @@ pub fn password_input(env: Option<&str>) -> Result<Option<Zeroizing<String>>> {
         return Ok(Some(Zeroizing::new(p.to_string())));
     }
     if let Some(path) = std::env::var_os("SSYNC_PASSWORD_FILE") {
-        use std::os::unix::fs::MetadataExt;
-        let f = crate::fs::open_config_file(std::path::Path::new(&path))?;
-        let m = f.metadata()?;
-        ensure!(
-            m.uid() == unsafe { libc::geteuid() } && m.mode() & 0o077 == 0 && m.len() <= 4098,
-            "password file must be private, owned, and bounded"
-        );
-        let mut bytes = Zeroizing::new(Vec::new());
-        f.take(4099).read_to_end(&mut bytes)?;
-        ensure!(bytes.len() <= 4098, "password file too large");
-        if bytes.last() == Some(&b'\n') {
-            bytes.pop();
-            if bytes.last() == Some(&b'\r') {
-                bytes.pop();
-            }
-        }
-        let secret = Zeroizing::new(
-            String::from_utf8(bytes.to_vec())
-                .map_err(|_| anyhow::anyhow!("password file must be UTF-8"))?,
-        );
-        auth::validate_password(&secret)?;
-        return Ok(Some(secret));
+        return read_password_file(std::path::Path::new(&path))
+            .with_context(|| format!("reading the configured password file {path:?}"))
+            .map(Some);
     }
     if let Ok(fd) = std::env::var("SSYNC_PASSWORD_FD") {
         use std::os::fd::FromRawFd;
@@ -119,6 +100,31 @@ pub fn password_input(env: Option<&str>) -> Result<Option<Zeroizing<String>>> {
         return Ok(Some(secret));
     }
     Ok(None)
+}
+fn read_password_file(path: &std::path::Path) -> Result<Zeroizing<String>> {
+    use std::io::Read;
+    use std::os::unix::fs::MetadataExt;
+    let f = crate::fs::open_config_file(path)?;
+    let m = f.metadata()?;
+    ensure!(
+        m.uid() == unsafe { libc::geteuid() } && m.mode() & 0o077 == 0 && m.len() <= 4098,
+        "password file must be private, owned, and bounded"
+    );
+    let mut bytes = Zeroizing::new(Vec::new());
+    f.take(4099).read_to_end(&mut bytes)?;
+    ensure!(bytes.len() <= 4098, "password file too large");
+    if bytes.last() == Some(&b'\n') {
+        bytes.pop();
+        if bytes.last() == Some(&b'\r') {
+            bytes.pop();
+        }
+    }
+    let secret = Zeroizing::new(
+        String::from_utf8(bytes.to_vec())
+            .map_err(|_| anyhow::anyhow!("password file must be UTF-8"))?,
+    );
+    auth::validate_password(&secret)?;
+    Ok(secret)
 }
 pub fn parse(args: &[String], env: Option<&str>) -> Result<Command> {
     ensure!(

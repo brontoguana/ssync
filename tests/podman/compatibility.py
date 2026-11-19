@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mixed ordinary/backup versions refuse before changing transfer data."""
+"""Check whether a released peer can transfer with the candidate as expected."""
 import argparse
 from pathlib import Path
 import application as app
@@ -8,11 +8,19 @@ from application import lab
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--previous',required=True,type=Path)
-    parser.add_argument('--backup-previous',type=Path);args=parser.parse_args()
+    parser.add_argument('--backup-previous',type=Path)
+    parser.add_argument('--compatible', action='store_true', help='expect successful transfers with 4.1.4 or later')
+    args=parser.parse_args()
     app.setup(app.BINARY)
     a,b=lab.PEERS
     source='/work/app-tests/source'
     app.fixture(a,source,2_000_003)
+    expected = app.snapshot(a,source)
+
+    def check_contents(actual):
+        assert actual.keys() == expected.keys(), (actual,expected)
+        for name in expected:
+            assert actual[name][:4] == expected[name][:4], (name,actual[name],expected[name])
     for old_peer in (a,b):
         for peer in (a,b):
             lab.podman('cp',str(args.previous if peer==old_peer else app.BINARY),peer+':/app/ssync')
@@ -25,9 +33,17 @@ def main():
             job=app.start(server,['force','put' if server_sends else 'get','40900',source if server_sends else dest]);app.ready(job)
             result=app.command(client,['force','get' if server_sends else 'put',ip+':40900',dest if server_sends else source])
             remote=app.wait(job)
-            assert result['code']!=0 and remote['code']!=0,(result,remote)
-            assert app.snapshot(b,dest)=={}
-            app.record('ordinary legacy peer refused before data changes',old_peer=old_peer,server_sends=server_sends)
+            if args.compatible:
+                assert result['code']==remote['code']==0,(result,remote)
+                candidate, previous = (result, remote) if old_peer==server else (remote, result)
+                assert "ID appears in this peer's log only" in candidate['out'], candidate
+                assert "ID appears in this peer's log only" not in previous['out'], previous
+                check_contents(app.snapshot(b,dest+'/source'))
+                app.record('ordinary transfer succeeds with previous peer',old_peer=old_peer,server_sends=server_sends)
+            else:
+                assert result['code']!=0 and remote['code']!=0,(result,remote)
+                assert app.snapshot(b,dest)=={}
+                app.record('ordinary legacy peer refused before data changes',old_peer=old_peer,server_sends=server_sends)
     if args.backup_previous:
         ip=lab.owned('container',b)['NetworkSettings']['Networks'][lab.NETWORK]['IPAddress']
         for old_peer in (a,b):
@@ -45,10 +61,18 @@ p=pathlib.Path(sys.argv[1]);p.write_text('@'+sys.argv[2]+'\\n'+sys.argv[3]+'='+s
 ''',client,f'{ip}:40900',app.PASSWORD,source)
             job=app.start(b,['backup-server','40900',config]);app.ready(job)
             try:
-                result=app.command(a,['backup-client',client]);assert result['code']!=0,result
-                assert app.snapshot(b,bay)=={}
+                result=app.command(a,['backup-client',client])
                 assert app.snapshot(b,other)=={}
-                app.record('backup legacy peer refused before data changes',old_peer=old_peer)
+                if args.compatible:
+                    assert result['code']==0,result
+                    check_contents(app.snapshot(b,bay))
+                    candidate = result if old_peer==b else app.logs(job)
+                    assert "ID appears in this peer's log only" in candidate['out'], candidate
+                    app.record('backup transfer succeeds with previous peer',old_peer=old_peer)
+                else:
+                    assert result['code']!=0,result
+                    assert app.snapshot(b,bay)=={}
+                    app.record('backup legacy peer refused before data changes',old_peer=old_peer)
             finally:app.stop(job);app.wait(job)
 
 

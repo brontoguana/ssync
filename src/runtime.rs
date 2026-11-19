@@ -214,7 +214,9 @@ impl Drop for Handshake {
 fn connector_session(t: &Transfer, socket: TcpStream, control: &Arc<Control>) -> Result<()> {
     let _guard = control.track(&socket)?;
     let mut channel = Channel::authenticate(socket, &t.password, None, t.sending())
-        .map_err(|_| anyhow::anyhow!(AUTHENTICATION_FAILED))?;
+        .map_err(|_| anyhow::anyhow!(AUTHENTICATION_FAILED))
+        .context("client could not authenticate with the server")?;
+    channel.log_authenticated();
     transfer::run(t, &mut channel, true, &control.stop)?;
     Ok(())
 }
@@ -225,6 +227,7 @@ fn authenticate_listener(
 ) -> Result<Channel> {
     Channel::authenticate(socket, &t.password, Some(credential), t.sending())
         .map_err(|_| anyhow::anyhow!(AUTHENTICATION_FAILED))
+        .context("server could not authenticate the client")
 }
 fn connect_addresses(
     addresses: impl IntoIterator<Item = SocketAddr>,
@@ -243,26 +246,47 @@ fn connect_addresses(
         None => bail!("hostname resolved to no addresses"),
     }
 }
+fn describe_transfer(t: &Transfer) -> String {
+    let endpoint = match &t.host {
+        Some(host) => format!("connecting to host {host:?} on port {}", t.port),
+        None => format!("listening on port {}", t.port),
+    };
+    format!(
+        "{} ({}, {endpoint}, local paths {:?})",
+        t.action,
+        if t.sending() { "send" } else { "receive" },
+        t.paths
+    )
+}
 pub fn transfer_command(t: Transfer, control: Arc<Control>) -> Result<()> {
+    run_transfer(&t, &control).with_context(|| describe_transfer(&t))
+}
+fn run_transfer(t: &Transfer, control: &Arc<Control>) -> Result<()> {
     if let Some(host) = &t.host {
         loop {
             ensure!(!control.stop.load(Ordering::Relaxed), "cancelled");
             let connected =
                 (|| connect_addresses((host.as_str(), t.port).to_socket_addrs()?, &control.stop))();
             if let Ok(s) = connected {
-                let result = connector_session(&t, s, &control);
+                let result = connector_session(t, s, control);
                 if !t.continuous() {
                     return result;
                 }
                 if let Err(e) = result {
-                    eprintln!("Continuous session failed; retrying: {e:#}");
+                    eprintln!(
+                        "Continuous session failed for {}. Retrying. {e:#}",
+                        describe_transfer(t)
+                    );
                 }
             } else {
                 let error = connected.unwrap_err();
                 if !t.continuous() {
                     return Err(error);
                 }
-                eprintln!("Continuous connection failed; retrying: {error:#}");
+                eprintln!(
+                    "Continuous connection failed for {}. Retrying. {error:#}",
+                    describe_transfer(t)
+                );
             }
             for _ in 0..20 {
                 if control.stop.load(Ordering::Relaxed) {
@@ -292,20 +316,24 @@ pub fn transfer_command(t: Transfer, control: Arc<Control>) -> Result<()> {
                 if workers.len() >= MAX_PENDING_HANDSHAKES + MAX_TRANSFERS {
                     continue;
                 }
-                let Some(mut handshake) = handshakes.reserve(addr.ip(), &control) else {
+                let Some(mut handshake) = handshakes.reserve(addr.ip(), control) else {
                     continue;
                 };
                 if !t.continuous() {
                     let _guard = control.track(&socket)?;
-                    let authenticated = authenticate_listener(&t, socket, &credential);
+                    let authenticated = authenticate_listener(t, socket, &credential);
                     handshake.record(&authenticated);
                     drop(handshake);
                     match authenticated {
                         Ok(mut channel) => {
-                            return transfer::run(&t, &mut channel, false, &control.stop)
+                            channel.log_authenticated();
+                            return transfer::run(t, &mut channel, false, &control.stop)
                                 .map(|_| ());
                         }
-                        Err(e) => eprintln!("Session failed: {e:#}"),
+                        Err(e) => eprintln!(
+                            "Session failed for {} from {addr}. Still listening. {e:#}",
+                            describe_transfer(t)
+                        ),
                     }
                     continue;
                 }
@@ -319,14 +347,19 @@ pub fn transfer_command(t: Transfer, control: Arc<Control>) -> Result<()> {
                         let authenticated = authenticate_listener(&t, socket, &credential);
                         handshake.record(&authenticated);
                         let mut channel = authenticated?;
+                        channel.log_authenticated();
                         let slot = Slot::take(&active, MAX_TRANSFERS);
                         drop(handshake);
-                        let _session = slot.context("listener transfer slots busy; retry later")?;
+                        let _session =
+                            slot.ok_or_else(|| transfer::listener_busy(&mut channel, t.sending()))?;
                         transfer::run(&t, &mut channel, false, &control.stop)?;
                         Ok(())
                     })();
                     if let Err(e) = result {
-                        eprintln!("Session failed: {e:#}");
+                        eprintln!(
+                            "Session failed for {} from {addr}. {e:#}",
+                            describe_transfer(&t)
+                        );
                     }
                 }));
             }
@@ -417,65 +450,107 @@ pub fn diagnostic(action: &str, path: &Path) -> Result<()> {
     Ok(())
 }
 pub fn config(path: &Path, sole_owned: bool, control: Arc<Control>) -> Result<()> {
+    run_config(path, sole_owned, control)
+        .with_context(|| format!("running saved configuration {path:?}"))
+}
+fn run_config(path: &Path, sole_owned: bool, control: Arc<Control>) -> Result<()> {
     use std::os::unix::fs::MetadataExt;
     let file = fs::open_transfer_config(path, sole_owned)?;
     let m = file.metadata()?;
     ensure!(
-        m.mode() & 0o022 == 0 && m.len() <= 1_048_576,
-        "unsafe or oversized .ssync file"
+        m.mode() & 0o022 == 0,
+        ".ssync configuration is writable by group or other users (mode {:04o})",
+        m.mode() & 0o777
+    );
+    ensure!(
+        m.len() <= 1_048_576,
+        ".ssync configuration exceeds the 1 MiB limit ({} bytes)",
+        m.len()
     );
     ensure!(
         m.uid() == unsafe { libc::geteuid() } || m.uid() == 0,
-        ".ssync configuration must be owned by the current user or root"
+        ".ssync configuration must be owned by the current user or root (found owner UID {})",
+        m.uid()
     );
-    let data = read_config(file)?;
+    let data = read_config(file).context("reading saved configuration")?;
     let mut commands = Vec::new();
     let password = cli::password_input(std::env::var("SSYNC_PASSWORD").ok().as_deref())?;
-    for line in data.lines() {
+    for (index, line) in data.lines().enumerate() {
+        let line_number = index + 1;
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let args = shell_words::split(line)
-            .map_err(|_| anyhow::anyhow!("invalid quoted .ssync command"))?;
-        let Command::Transfer(mut t) = cli::parse(&args, password.as_deref().map(|s| s.as_str()))?
+        let args = shell_words::split(line).map_err(|_| {
+            anyhow::anyhow!("invalid quoted .ssync command at {path:?} line {line_number}")
+        })?;
+        let Command::Transfer(mut t) = cli::parse(&args, password.as_deref().map(|s| s.as_str()))
+            .with_context(|| {
+            format!("invalid .ssync command at {path:?} line {line_number}")
+        })?
         else {
-            bail!(".ssync permits only file transfer commands");
+            bail!(".ssync permits only file transfer commands ({path:?} line {line_number})");
         };
         t.options.sole_owned |= sole_owned;
-        commands.push(t);
+        commands.push((line_number, t));
         ensure!(commands.len() <= 32, ".ssync command limit");
     }
     ensure!(!commands.is_empty(), "empty .ssync file");
     if commands.len() > 1 {
         ensure!(
-            commands.iter().all(|t| t.host.is_none() || t.options.force),
+            commands
+                .iter()
+                .all(|(_, t)| t.host.is_none() || t.options.force),
             "concurrent .ssync connectors require force to avoid interleaved confirmations"
         );
     }
+    let first_failure = Arc::new(AtomicUsize::new(0));
     let mut workers = Vec::new();
-    for t in commands {
+    for (line, t) in commands {
         let c = control.clone();
-        workers.push(std::thread::spawn(move || {
-            let result = transfer_command(t, c.clone());
-            if result.is_err() {
-                c.cancel();
-            }
-            result
-        }));
+        let first_failure = first_failure.clone();
+        workers.push((
+            line,
+            std::thread::spawn(move || {
+                let result = transfer_command(t, c.clone());
+                if result.is_err()
+                    && !c.stop.load(Ordering::Relaxed)
+                    && first_failure
+                        .compare_exchange(0, line, Ordering::Relaxed, Ordering::Relaxed)
+                        .is_ok()
+                {
+                    c.cancel();
+                }
+                result
+            }),
+        ));
     }
-    let mut failed = false;
-    for worker in workers {
-        match worker.join() {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                eprintln!("Configuration transfer failed: {e:#}");
-                failed = true;
-            }
-            Err(_) => failed = true,
+    let mut failures = Vec::new();
+    for (line, worker) in workers {
+        let result = worker
+            .join()
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("transfer worker terminated unexpectedly")));
+        if let Err(error) = result {
+            failures.push((line, error));
         }
     }
-    ensure!(!failed, "configuration transfer failed");
+    let first = first_failure.load(Ordering::Relaxed);
+    if let Some(index) = failures.iter().position(|(line, _)| *line == first) {
+        let (_, cause) = failures.remove(index);
+        eprintln!("Configuration transfer failed at {path:?} line {first}. {cause:#}");
+        for (line, error) in failures {
+            eprintln!(
+                "Configuration transfer at {path:?} line {line} ended while stopping after line {first} failed. {error:#}"
+            );
+        }
+        bail!("configuration {path:?} failed at line {first}");
+    }
+    if !failures.is_empty() {
+        for (line, error) in failures {
+            eprintln!("Configuration transfer at {path:?} line {line} ended. {error:#}");
+        }
+        bail!("configuration {path:?} did not complete");
+    }
     Ok(())
 }
 fn read_config(reader: impl Read) -> Result<zeroize::Zeroizing<String>> {
@@ -487,6 +562,23 @@ fn read_config(reader: impl Read) -> Result<zeroize::Zeroizing<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exclusive_slot_is_released_when_its_worker_unwinds() {
+        let slots = Arc::new(AtomicUsize::new(0));
+        let worker_slots = slots.clone();
+        let worker = std::thread::spawn(move || {
+            let _guard = Slot::take(&worker_slots, 1).unwrap();
+            assert!(Slot::take(&worker_slots, 1).is_none());
+            panic!("simulate a worker failure");
+        });
+        let panic = worker.join().unwrap_err();
+        assert_eq!(
+            panic.downcast_ref::<&str>(),
+            Some(&"simulate a worker failure")
+        );
+        assert!(Slot::take(&slots, 1).is_some());
+    }
     #[test]
     fn rejected_ips_cannot_spend_global_credit_or_fill_state() {
         let mut admission = Admission::default();

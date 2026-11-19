@@ -1,6 +1,9 @@
 //! Project configuration names and describe links without following their targets.
-use crate::fs::{self, Identity, Root};
-use anyhow::{Result, ensure};
+use crate::{
+    fs::{self, Identity, Root},
+    transfer::TransferEntry,
+};
+use anyhow::{Context, Result, ensure};
 use std::{
     collections::{BTreeMap, BTreeSet},
     os::unix::fs::MetadataExt,
@@ -59,7 +62,14 @@ impl Plan {
         stop: &AtomicBool,
     ) -> Result<()> {
         ensure!(!stop.load(Ordering::Relaxed), "transfer cancelled");
-        if omitted(target) || root.password_path(source)? {
+        let entry = || format!("scanning source entry {:?}", root.path.join(source));
+        let report_entry = || TransferEntry(project(target));
+        if omitted(target)
+            || root
+                .password_path(source)
+                .with_context(entry)
+                .with_context(report_entry)?
+        {
             return Ok(());
         }
         let original_target = target;
@@ -68,14 +78,21 @@ impl Plan {
         if omitted(target) {
             return Ok(());
         }
-        let meta = root.source_metadata(source)?;
+        let meta = root
+            .source_metadata(source)
+            .with_context(entry)
+            .with_context(report_entry)?;
         if meta.is_symlink() {
             let name = sidecar(target);
             if omitted(&name) {
                 return Ok(());
             }
-            self.insert(&name)?;
-            let bytes = root.source_link(source)?;
+            self.insert(&name)
+                .with_context(|| TransferEntry(name.clone()))?;
+            let bytes = root
+                .source_link(source)
+                .with_context(entry)
+                .with_context(report_entry)?;
             let original = fs::split(target).1;
             let mut description = String::from("type: softlink\n");
             match std::str::from_utf8(&bytes) {
@@ -102,10 +119,14 @@ impl Plan {
                 },
             );
         } else {
-            self.insert(target)?;
+            self.insert(target).with_context(report_entry)?;
             if meta.is_dir() {
                 let before = fs::identity(&meta);
-                for name in root.list(source)? {
+                for name in root
+                    .list(source)
+                    .with_context(entry)
+                    .with_context(report_entry)?
+                {
                     let child = |p: &str| {
                         if p.is_empty() {
                             name.clone()
@@ -115,14 +136,22 @@ impl Plan {
                     };
                     self.scan(root, &child(source), &child(original_target), omitted, stop)?;
                 }
-                ensure!(
-                    fs::identity(&root.source_metadata(source)?) == before,
-                    "source directory changed while planning links"
-                );
+                if fs::identity(
+                    &root
+                        .source_metadata(source)
+                        .with_context(entry)
+                        .with_context(report_entry)?,
+                ) != before
+                {
+                    return Err(fs::FileFailure::Changed)
+                        .with_context(entry)
+                        .with_context(report_entry);
+                }
             } else if meta.nlink() > 1 {
                 let name = sidecar(target);
                 if !omitted(&name) {
-                    self.insert(&name)?;
+                    self.insert(&name)
+                        .with_context(|| TransferEntry(name.clone()))?;
                     self.hardlinks
                         .entry((meta.dev(), meta.ino()))
                         .or_default()

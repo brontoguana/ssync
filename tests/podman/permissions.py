@@ -77,7 +77,9 @@ p=pathlib.Path(sys.argv[1]);os.link('/work/app-tests/outside/canary',p/'z_confli
     job = app.start(B, ['force','merge','get','40924',dest]); app.ready(job)
     result = app.command(A, ['force','put',ip+':40924',source]); remote = app.wait(job)
     assert result['code'] != 0 and remote['code'] != 0, (result, remote)
-    assert 'links/special files are unsupported' in remote['err'], remote
+    assert 'regular file has 2 hard links' in remote['err'] and '"z_conflict"' in remote['err'], remote
+    assert 'regular file has 2 hard links' in result['err'] and '"z_conflict"' in result['err'], result
+    assert dest not in result['err'], result
     actual = modes(B, dest); expected = modes(A, source)
     for path, mode in expected.items():
         if path != 'z_conflict': assert actual[path] == mode, (path, actual, expected)
@@ -90,8 +92,41 @@ p=pathlib.Path(sys.argv[1]);os.link('/work/app-tests/outside/canary',p/'z_confli
     job = app.start(B, ['force','sole-owned','merge','get','40924',strict]); app.ready(job)
     result = app.command(A, ['force','put',ip+':40924',source]); remote = app.wait(job)
     assert result['code'] != 0 and remote['code'] != 0 and 'sole-owned policy' in remote['err'], (result, remote)
+    assert 'setting destination permissions' in result['err'] and 'sole-owned policy' in result['err'], result
     assert not (modes(B, strict).get('shared', 0) & 0o022)
     app.record('source modes cannot override local sole-owned policy')
+
+    # Both peers identify a nested unreadable source, without sharing its absolute path.
+    blocked = source + '/nested-unreadable'
+    app.execute(A, """import pathlib,sys
+p=pathlib.Path(sys.argv[1]);p.mkdir()
+f=p/'private-page';f.write_bytes(b'unreadable');f.chmod(0)
+""", blocked)
+    try:
+        job = app.start(B, ['force','get','40924',strict]); app.ready(job)
+        result = app.command(A, ['force','put',ip+':40924',blocked]); remote = app.wait(job)
+        assert result['code'] != 0 and remote['code'] != 0, (result, remote)
+        assert blocked+'/private-page' in result['err'] and 'Permission denied' in result['err'], result
+        assert 'nested-unreadable/private-page' in remote['err'] and 'permission denied' in remote['err'], remote
+        assert blocked not in remote['err'], remote
+    finally:
+        app.execute(A, 'import shutil,sys;shutil.rmtree(sys.argv[1])', blocked)
+    app.record('unreadable source is named in both failure logs')
+
+    # Receiver-only mirror entries stay local, with an actionable reason sent back.
+    mirror = BASE+'/mirror-errors'
+    mirror_source = BASE+'/mirror-source'
+    app.execute(A, 'import pathlib,sys;pathlib.Path(sys.argv[1]).mkdir()', mirror_source)
+    app.execute(B, """import pathlib,sys
+p=pathlib.Path(sys.argv[1]);p.mkdir()
+f=p/'receiver-only';f.write_text('extra');(p/'second-name').hardlink_to(f)
+""", mirror)
+    job = app.start(B, ['force','merge','get','40924',mirror]); app.ready(job)
+    result = app.command(A, ['force','put',ip+':40924',mirror_source]); remote = app.wait(job)
+    assert result['code'] != 0 and remote['code'] != 0, (result, remote)
+    assert 'removing extra destination entries' in result['err'] and 'regular file has 2 hard links' in result['err'], result
+    assert mirror+'/receiver-only' in remote['err'] and 'receiver-only' not in result['err'], (result, remote)
+    app.record('mirror error names local entry and shares reason without sharing its name')
     # Regular-file special bits are not propagated.
     app.execute(A, 'import pathlib,sys;p=pathlib.Path(sys.argv[1])/"script";p.chmod(0o6755)', source)
     special = BASE+'/special'
@@ -113,6 +148,25 @@ p=pathlib.Path(sys.argv[1]);os.link('/work/app-tests/outside/canary',p/'z_confli
     app.transfer(A, B, source+'/page', owned)
     app.execute(B, 'import pathlib,sys;p=pathlib.Path(sys.argv[1])/"page";assert p.stat().st_uid==0 and p.stat().st_mode&0o777==0o644', owned)
     app.record('unchanged readable file owned by another user needs no chmod')
+    app.execute(A, 'import pathlib,sys;(pathlib.Path(sys.argv[1])/"page").chmod(0o600)', source)
+    job = app.start(B, ['force','get','40924',owned]); app.ready(job)
+    result = app.command(A, ['force','put',ip+':40924',source+'/page']); remote = app.wait(job)
+    assert result['code'] != 0 and remote['code'] != 0, (result, remote)
+    assert '"page"' in result['err'] and 'setting destination permissions' in result['err'] and 'permission denied' in result['err'], result
+    assert owned+'/page' in remote['err'] and 'applying file mode 0600' in remote['err'], remote
+    assert modes(B, owned)['page'] == 0o644
+    app.record('failed chmod names the file and desired mode without changing existing permissions')
+
+    invalid_state = BASE+'/invalid-state'
+    app.execute(B, 'import pathlib,sys;p=pathlib.Path(sys.argv[1]);p.mkdir();(p/".ssync-state").mkdir(mode=0o755)', invalid_state)
+    job = app.start(B, ['force','get','40924',invalid_state]); app.ready(job)
+    result = app.command(A, ['force','put',ip+':40924',source+'/page']); remote = app.wait(job)
+    assert result['code'] != 0 and remote['code'] != 0, (result, remote)
+    assert '"page"' in result['err'] and 'preparing private resume data' in result['err'] and 'unsafe ownership or permissions' in result['err'], result
+    assert invalid_state+'/.ssync-state' in remote['err'] and 'mode 0755' in remote['err'], remote
+    assert invalid_state not in result['err'], result
+    app.record('unsafe resume directory distinguishes private-state permissions from file permissions')
+
     # Backup uses the same mode-aware transfer engine, including merge root.
     bay = BASE+'/bay'
     app.execute(B, 'import pathlib,sys;pathlib.Path(sys.argv[1]).mkdir(mode=0o700)', bay)

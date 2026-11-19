@@ -1,5 +1,18 @@
 # Changelog
 
+## 4.1.6 — 2026-11-19
+
+- Report `Lock held by: PID …` and the process name when available in the receiving peer's busy-destination log. Keep process details local.
+- Correlate authenticated ordinary and backup transfers with a shared nine-character log ID. Report the same failure summary on both updated peers, identify the client or server and data direction, and keep full local details at the origin. Negotiate diagnostics and final confirmation while retaining transfer compatibility with 4.1.4 and 4.1.5.
+- Document the exact-root advisory lock and verify that killing a receiver during a copy releases the lock and leaves its partial available for resume. Release the in-process backup bay reservation even if its worker panics.
+
+- Name the actual destination entry type when refusing a symbolic link or special file. Report hard-link counts only for regular files.
+
+- Include the affected file or directory, operation and underlying error in transfer diagnostics. Share bounded failure codes and eligible relative entry names between updated peers for errors such as denied permissions, file-type conflicts, changed files and unsafe resume state. Include the filename in local configuration and password-file errors and the exact failing path during source scans and mirror cleanup.
+
+- Report receiver lock contention and the 99% disk cutoff to the sender, along with the transfer stage and whether earlier destination changes may remain. Identify the first failed line in a saved configuration and distinguish it from jobs interrupted during cancellation. Explain incomplete connection messages and keep detailed receiver errors in its local log.
+- Add a persistent-listener regression for deleted-but-open files and descriptor/thread accumulation during replacements, mirror cleanup, failures, resume and backup transfers. Record a 4.1.5 review with 110 transfer attempts and no persistent deleted-file or handle leak found.
+
 ## 4.1.5 — 2026-11-18
 
 - Publish the exact tested binary; verify all six public downloads, README bootstrap, real 4.1.4 upgrade, already-current reporting and uninstall in the disposable rootless lab.

@@ -9,7 +9,7 @@ use opaque_ke::{
 use rand::{RngCore, rngs::OsRng};
 use serde::{Serialize, de::DeserializeOwned};
 use std::{
-    io::{Read, Write},
+    io::{ErrorKind, Read, Write},
     net::{Shutdown, TcpStream},
     sync::{
         Arc, Condvar, Mutex,
@@ -25,6 +25,8 @@ const CONTEXT: &[u8] = b"SSync-4.0/OPAQUE-ristretto255-SHA512/Noise-NNpsk0";
 const HANDSHAKE_LIMIT: usize = 2048;
 pub const FRAME_LIMIT: usize = 1_048_576;
 const RECORD: usize = 60_000;
+const READY_SPLIT: usize = 5; // Length field plus the first ready-message byte.
+const TRANSFER_ID_ALPHABET: &[u8; 32] = b"23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const AUTH_TIMEOUT: Duration = Duration::from_secs(15);
 static AUTH_WORK: AtomicUsize = AtomicUsize::new(0);
 struct AuthPermit;
@@ -146,10 +148,27 @@ fn deadline(s: &TcpStream, end: Instant) -> Result<()> {
     Ok(())
 }
 
+fn transfer_id(transcript: &[u8]) -> String {
+    let hash = blake3::derive_key("SSync 4 public transfer log ID v1", transcript);
+    let bits = u64::from_le_bytes(hash[..8].try_into().unwrap());
+    let mut id = String::with_capacity(11);
+    for index in 0..9 {
+        if index == 3 || index == 6 {
+            id.push('-');
+        }
+        id.push(TRANSFER_ID_ALPHABET[((bits >> (index * 5)) & 31) as usize] as char);
+    }
+    id
+}
+
 pub struct Channel {
     socket: TcpStream,
     noise: snow::TransportState,
     failed: bool,
+    transfer_id: String,
+    initiator: bool,
+    sending: bool,
+    peer_diagnostics: bool,
     pub wire_sent: u64,
     pub wire_received: u64,
 }
@@ -381,26 +400,26 @@ impl Channel {
             let n = handshake.write_message(b"listener-confirm", &mut buf)?;
             send_raw(&mut socket, &buf[..n])?;
         }
+        let transfer_id = transfer_id(handshake.get_handshake_hash());
         let mut channel = Self {
             socket,
             noise: handshake.into_transport_mode()?,
             failed: false,
+            transfer_id,
+            initiator,
+            sending,
+            peer_diagnostics: false,
             wire_sent: 0,
             wire_received: 0,
         };
-        // The listener gates roots on the final encrypted acknowledgment.
+        // Older peers reassemble the same logical ready message from either
+        // layout. A split authenticated ready advertises transfer diagnostics.
         if initiator {
-            channel.send_bytes(b"ready-connector")?;
-            ensure!(
-                channel.recv_bytes()? == b"ready-listener",
-                "confirmation failed"
-            );
+            channel.send_bytes_inner(b"ready-connector", true)?;
+            channel.recv_ready(b"ready-listener")?;
         } else {
-            ensure!(
-                channel.recv_bytes()? == b"ready-connector",
-                "confirmation failed"
-            );
-            channel.send_bytes(b"ready-listener")?;
+            channel.recv_ready(b"ready-connector")?;
+            channel.send_bytes_inner(b"ready-listener", channel.peer_diagnostics)?;
         }
         drop(watchdog_guard);
         channel
@@ -410,6 +429,48 @@ impl Channel {
             .socket
             .set_write_timeout(Some(Duration::from_secs(120)))?;
         Ok((channel, selected))
+    }
+    fn recv_ready(&mut self, expected: &[u8]) -> Result<()> {
+        let (ready, first_record) = self.recv_bytes_inner()?;
+        ensure!(ready == expected, "confirmation failed");
+        self.peer_diagnostics = first_record == READY_SPLIT;
+        Ok(())
+    }
+    pub(crate) fn peer_diagnostics(&self) -> bool {
+        self.peer_diagnostics
+    }
+    pub(crate) fn transfer_id(&self) -> &str {
+        &self.transfer_id
+    }
+    pub(crate) fn local_role(&self) -> &'static str {
+        Self::role(self.initiator, self.sending)
+    }
+    pub(crate) fn peer_role(&self) -> &'static str {
+        Self::role(!self.initiator, !self.sending)
+    }
+    fn role(initiator: bool, sending: bool) -> &'static str {
+        match (initiator, sending) {
+            (true, true) => "client (sender)",
+            (true, false) => "client (receiver)",
+            (false, true) => "server (sender)",
+            (false, false) => "server (receiver)",
+        }
+    }
+    pub(crate) fn log_authenticated(&self) {
+        let peer = self
+            .socket
+            .peer_addr()
+            .map_or_else(|_| "unknown".into(), |addr| addr.to_string());
+        let capability = if self.peer_diagnostics {
+            ""
+        } else {
+            " (ID appears in this peer's log only)"
+        };
+        println!(
+            "Transfer {} authenticated on {} with {peer}{capability}",
+            self.transfer_id,
+            self.local_role()
+        );
     }
     pub fn send<T: Serialize>(&mut self, value: &T) -> Result<()> {
         self.send_bytes(&serde_json::to_vec(value)?)
@@ -428,32 +489,69 @@ impl Channel {
     }
     pub fn send_bytes(&mut self, data: &[u8]) -> Result<()> {
         ensure!(!self.failed, "channel is closed after a previous failure");
-        let result = self.send_bytes_inner(data);
+        let result = self.send_bytes_inner(data, false).map_err(transport_error);
         self.fail_closed(result)
     }
-    fn send_bytes_inner(&mut self, data: &[u8]) -> Result<()> {
+    fn send_bytes_inner(&mut self, data: &[u8], split_ready: bool) -> Result<()> {
         ensure!(data.len() <= FRAME_LIMIT, "message too large");
-        let mut first = true;
         // All message lengths are authenticated inside Noise records.
         let mut plain = Vec::with_capacity(data.len() + 4);
         plain.extend_from_slice(&(data.len() as u32).to_be_bytes());
         plain.extend_from_slice(data);
-        for piece in plain.chunks(RECORD) {
-            let mut out = vec![0; piece.len() + 16];
-            let n = self.noise.write_message(piece, &mut out)?;
-            send_raw(&mut self.socket, &out[..n])?;
-            self.wire_sent += n as u64 + 4;
-            first = false;
+        let remainder = if split_ready {
+            let (first, remainder) = plain.split_at(READY_SPLIT);
+            self.send_record(first)?;
+            remainder
+        } else {
+            &plain[..]
+        };
+        for piece in remainder.chunks(RECORD) {
+            self.send_record(piece)?;
         }
-        ensure!(!first, "empty encrypted framing");
+        Ok(())
+    }
+    fn send_record(&mut self, piece: &[u8]) -> Result<()> {
+        let mut out = vec![0; piece.len() + 16];
+        let n = self.noise.write_message(piece, &mut out)?;
+        send_raw(&mut self.socket, &out[..n])?;
+        self.wire_sent += n as u64 + 4;
         Ok(())
     }
     pub fn recv_bytes(&mut self) -> Result<Vec<u8>> {
         ensure!(!self.failed, "channel is closed after a previous failure");
-        let result = self.recv_bytes_inner();
+        let result = self
+            .recv_bytes_inner()
+            .map(|(data, _)| data)
+            .map_err(transport_error);
         self.fail_closed(result)
     }
-    fn recv_bytes_inner(&mut self) -> Result<Vec<u8>> {
+    pub(crate) fn report_failure(&mut self, message: &impl Serialize) {
+        let deadline = Duration::from_millis(250);
+        if !self.peer_diagnostics
+            || self.failed
+            || self.socket.set_write_timeout(Some(deadline)).is_err()
+            || self.send(message).is_err()
+            || self.socket.shutdown(Shutdown::Write).is_err()
+        {
+            return;
+        }
+        self.failed = true;
+        // Closing a TCP socket with unread input can reset it and lose the
+        // report. Drain briefly without parsing any more peer messages.
+        let end = Instant::now() + deadline;
+        let mut buffer = [0; 4096];
+        for _ in 0..16 {
+            let remaining = end.saturating_duration_since(Instant::now());
+            if remaining.is_zero() || self.socket.set_read_timeout(Some(remaining)).is_err() {
+                break;
+            }
+            match self.socket.read(&mut buffer) {
+                Ok(n) if n > 0 => {}
+                _ => break,
+            }
+        }
+    }
+    fn recv_bytes_inner(&mut self) -> Result<(Vec<u8>, usize)> {
         let encrypted = recv_raw(&mut self.socket, RECORD + 16)?;
         self.wire_received += encrypted.len() as u64 + 4;
         let mut buf = vec![0; RECORD];
@@ -471,7 +569,35 @@ impl Channel {
             ensure!(n > 0 && result.len() + n <= size, "invalid record boundary");
             result.extend_from_slice(&buf[..n]);
         }
-        Ok(result)
+        Ok((result, n))
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum TransportFailure {
+    Disconnected,
+    TimedOut,
+}
+impl std::fmt::Display for TransportFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Disconnected => {
+                "connection closed before SSync received or sent a complete message"
+            }
+            Self::TimedOut => "timed out while exchanging a transfer message",
+        })
+    }
+}
+fn transport_error(error: anyhow::Error) -> anyhow::Error {
+    match error.downcast_ref::<std::io::Error>().map(|e| e.kind()) {
+        Some(ErrorKind::UnexpectedEof) => anyhow::anyhow!(TransportFailure::Disconnected),
+        Some(ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted | ErrorKind::BrokenPipe) => {
+            error.context(TransportFailure::Disconnected)
+        }
+        Some(ErrorKind::TimedOut | ErrorKind::WouldBlock) => {
+            error.context(TransportFailure::TimedOut)
+        }
+        _ => error,
     }
 }
 

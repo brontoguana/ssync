@@ -18,7 +18,7 @@ use std::{
     },
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
@@ -286,7 +286,8 @@ fn load(file: &Path, client: bool, sole_owned: bool) -> Result<Config> {
             !file.starts_with(&entry.path),
             "backup config must be outside source/bay directories"
         );
-        let root = Root::with_policy(&entry.path, sole_owned)?;
+        let root = Root::with_policy(&entry.path, sole_owned)
+            .with_context(|| format!("opening backup directory {:?}", entry.path))?;
         let meta = root.metadata("")?.context("directory missing")?;
         let key = root.storage_key()?;
         ensure!(
@@ -329,13 +330,17 @@ pub fn run(command: Command, control: Arc<Control>) -> Result<()> {
             options,
         } => server(
             port,
-            load(&file, false, options.sole_owned)?,
+            load(&file, false, options.sole_owned)
+                .with_context(|| format!("loading backup-server configuration {file:?}"))?,
             options,
             control,
         ),
-        Command::Client { file, options } => {
-            client(load(&file, true, options.sole_owned)?, options, control)
-        }
+        Command::Client { file, options } => client(
+            load(&file, true, options.sole_owned)
+                .with_context(|| format!("loading backup-client configuration {file:?}"))?,
+            options,
+            control,
+        ),
     }
 }
 fn server(port: u16, config: Config, options: Options, control: Arc<Control>) -> Result<()> {
@@ -352,9 +357,9 @@ fn server(port: u16, config: Config, options: Options, control: Arc<Control>) ->
     );
     let credentials = Arc::new(credentials);
     let config = Arc::new(config);
-    let bay_locks = Arc::new(
+    let bay_slots = Arc::new(
         (0..config.entries.len())
-            .map(|_| Mutex::new(()))
+            .map(|_| Arc::new(AtomicUsize::new(0)))
             .collect::<Vec<_>>(),
     );
     let handshakes = Handshakes::default();
@@ -370,10 +375,10 @@ fn server(port: u16, config: Config, options: Options, control: Arc<Control>) ->
                 let Some(mut handshake) = handshakes.reserve(addr.ip(), &control) else {
                     continue;
                 };
-                let (credentials, config, locks, active, control) = (
+                let (credentials, config, bays, active, control) = (
                     credentials.clone(),
                     config.clone(),
-                    bay_locks.clone(),
+                    bay_slots.clone(),
                     active.clone(),
                     control.clone(),
                 );
@@ -384,22 +389,32 @@ fn server(port: u16, config: Config, options: Options, control: Arc<Control>) ->
                         let authenticated =
                             Channel::authenticate_backup(socket, "", Some(&credentials));
                         handshake.record(&authenticated);
-                        let (mut channel, selected) = authenticated.map_err(|_| {
-                            anyhow::anyhow!("backup authentication/protocol confirmation failed")
-                        })?;
-                        let session = locks[selected]
-                            .try_lock()
-                            .ok()
-                            .zip(Slot::take(&active, MAX_UPLOADS));
+                        let (mut channel, selected) = authenticated
+                            .map_err(|_| {
+                                anyhow::anyhow!(
+                                    "backup authentication/protocol confirmation failed"
+                                )
+                            })
+                            .context("server could not authenticate the client")?;
+                        channel.log_authenticated();
+                        // A bay holds one session. The slot drops even if its worker panics.
+                        let session =
+                            Slot::take(&bays[selected], 1).zip(Slot::take(&active, MAX_UPLOADS));
                         let Some((_bay, _session)) = session else {
                             // Keep this brief refusal within the pending connection limit.
-                            channel.send(&false)?;
-                            bail!("backup receiver or bay busy; retry later");
+                            channel
+                                .send(&false)
+                                .with_context(|| backup_admission_interrupted(&channel))?;
+                            return Err(backup_busy(&channel));
                         };
                         drop(handshake);
-                        channel.send(&true)?;
+                        channel
+                            .send(&true)
+                            .with_context(|| backup_admission_interrupted(&channel))?;
                         let t = transfer(&config.entries[selected], false, options);
-                        transfer::run(&t, &mut channel, false, &control.stop)?;
+                        transfer::run(&t, &mut channel, false, &control.stop).with_context(
+                            || format!("receiving into backup bay {:?}", t.paths[0]),
+                        )?;
                         Ok(())
                     })();
                     if let Err(e) = result {
@@ -425,6 +440,20 @@ fn server(port: u16, config: Config, options: Options, control: Arc<Control>) ->
     }
     bail!("cancelled")
 }
+fn backup_busy(channel: &Channel) -> anyhow::Error {
+    anyhow::anyhow!(
+        "Transfer {} failed on server (receiver): backup receiver or bay busy; retry later",
+        channel.transfer_id()
+    )
+}
+fn backup_admission_interrupted(channel: &Channel) -> String {
+    format!(
+        "Transfer {} interrupted on {} during backup admission. Failure origin unknown; check the {} log",
+        channel.transfer_id(),
+        channel.local_role(),
+        channel.peer_role()
+    )
+}
 fn upload(
     entry: &Entry,
     destination: &Destination,
@@ -447,11 +476,15 @@ fn upload(
     let socket = connected.context("cannot connect to backup server")?;
     let _socket = control.track(&socket)?;
     let (mut channel, _) = Channel::authenticate_backup(socket, &entry.password, None)
-        .map_err(|_| anyhow::anyhow!("backup authentication/protocol confirmation failed"))?;
-    ensure!(
-        channel.recv::<bool>()?,
-        "backup receiver or bay busy; retry later"
-    );
+        .map_err(|_| anyhow::anyhow!("backup authentication/protocol confirmation failed"))
+        .context("client could not authenticate with the server")?;
+    channel.log_authenticated();
+    if !channel
+        .recv::<bool>()
+        .with_context(|| backup_admission_interrupted(&channel))?
+    {
+        return Err(backup_busy(&channel));
+    }
     transfer::run(
         &transfer(entry, true, options.clone()),
         &mut channel,

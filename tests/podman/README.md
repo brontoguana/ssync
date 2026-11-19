@@ -25,6 +25,14 @@ All test payloads are synthetic. Stop/restart or removal destroys tmpfs data; gr
 
 ## Native executable loading and test operation
 
+`python3 tests/podman/handles.py` checks persistent receive, offer and backup
+listeners for deleted-but-open files and growing descriptor/thread counts. It
+uses the current static binary, resets the application fixtures, and runs alone
+in the two existing peers. It also exercises interrupted/resumed transfers and
+external unlink races. An allocated/deleted-file positive control validates the
+`/proc/PID/fd` link-count detector and disk-space measurements. Results and raw
+descriptor samples are saved under ignored `target/podman-handles/`.
+
 Once a Linux executable exists, copy the artifact, not the working tree:
 
 ```bash
