@@ -65,7 +65,18 @@ ssync get server:1500 ./downloads
 ssync ?                        # interactive guidance
 ```
 
-Receiver directories must already exist. Without `merge`, items retain their source basenames. Receiver `merge` transfers a single directory's contents into the receiver root. Qualifiers precede the action: `merge`, `nodelete`, `dryrun`, `verify`, `verbose`, `force`/`noprompt`, `sole-owned`, `skip:substring`, `--chmod MODE` (or `chmod:MODE`).
+Receiver directories must already exist. Without `merge`, items retain their source basenames. Receiver `merge` transfers a single directory's contents into the receiver root. Qualifiers precede the action: `merge`, `nodelete`, `dryrun`, `verify`, `verbose`, `force`/`noprompt`, `sole-owned`, `large-transfer`, `skip:substring`, `--chmod MODE` (or `chmod:MODE`).
+
+For a large directory tree, add `large-transfer` before the action on both peers.
+It lifts the local 10,000-entry limits for directory listings and transfer manifests,
+and the 8 MiB limit on total manifest path bytes. The option also works on individual
+`.ssync` transfer lines and on `backup-client` and `backup-server`. Large manifests
+can use more memory.
+
+```bash
+ssync large-transfer offer MyDocuments ./docs
+ssync large-transfer force get server:MyDocuments ./downloads
+```
 
 Shared-writable source and destination directories are accepted by default (since 4.1.2). Add `sole-owned` **on either side independently** to reject group/other-writable local roots and traversed directories:
 
@@ -125,7 +136,7 @@ The server stays running; the client performs one cycle and exits without prompt
 
 Ordinary and backup transfers require **4.1.4+ on both endpoints** for permission preservation; restart listeners after upgrading. Backup mode accepts uploads only: no network restoration, remote execution, Restic integration or at-rest encryption. Retrieve files with normal administrator server access. Blank/comment lines are ignored, `=` splits at its first occurrence, and IPv6 servers use `@[address][:port]`. Configuration limits are 32 servers and 32 sources/bays. Passwords must be unique within each file; server bay directories must not overlap.
 
-Current inherited safety limits include **16 GiB per file, 10,000 manifest entries per source, and 16 GiB of private partial state per bay**. Oversized backups fail clearly rather than silently omitting files.
+Default backup limits include **16 GiB per file, 10,000 manifest entries per source, and 16 GiB of private partial state per bay**. `large-transfer` lifts the directory and manifest limits. Oversized backups fail clearly rather than silently omitting files.
 
 Fixed 200,000-byte comparisons, bounded pipelining, verified resume and final content verification are reused. Each destination currently scans/hashes independently, reading unchanged contents for integrity; persistent indexing and sharing scans between destinations are future optimizations. `.ssync-state` is reserved for private resume files, which are excluded from transfers; 4.1.1 hardening makes incompatible entries with that name fail clearly. See [backup command contract](docs/CONTRACT.md#backup-commands-41).
 

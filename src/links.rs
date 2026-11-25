@@ -1,6 +1,6 @@
 //! Project configuration names and describe links without following their targets.
 use crate::{
-    fs::{self, Identity, Root},
+    fs::{self, Identity, Root, TransferLimits},
     transfer::TransferEntry,
 };
 use anyhow::{Context, Result, ensure};
@@ -14,8 +14,8 @@ pub struct Description {
     pub bytes: Vec<u8>,
     pub identity: Identity,
 }
-#[derive(Default)]
 pub struct Plan {
+    limits: TransferLimits,
     pub descriptions: BTreeMap<String, Description>,
     paths: BTreeSet<String>,
     hardlinks: BTreeMap<(u64, u64), Vec<(String, Identity)>>,
@@ -37,6 +37,16 @@ pub fn sidecar(path: &str) -> String {
     format!("{path}.ssynclink")
 }
 impl Plan {
+    pub fn new(limits: TransferLimits) -> Self {
+        Self {
+            limits,
+            descriptions: BTreeMap::new(),
+            paths: BTreeSet::new(),
+            hardlinks: BTreeMap::new(),
+            path_bytes: 0,
+        }
+    }
+
     fn insert(&mut self, path: &str) -> Result<()> {
         if !path.is_empty() {
             fs::valid(path)?;
@@ -48,7 +58,7 @@ impl Plan {
         );
         self.path_bytes += path.len();
         ensure!(
-            self.paths.len() <= fs::MAX_ENTRIES && self.path_bytes <= 8 * 1024 * 1024,
+            self.paths.len() <= self.limits.entries && self.path_bytes <= self.limits.path_bytes,
             "link manifest limit"
         );
         Ok(())
@@ -181,5 +191,39 @@ impl Plan {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn large_transfer_lifts_both_manifest_limits() {
+        let default_limits = TransferLimits::new(false);
+        let mut entries = Plan::new(default_limits);
+        let mut large = Plan::new(TransferLimits::new(true));
+        for index in 0..default_limits.entries {
+            let path = format!("entry-{index}");
+            entries.insert(&path).unwrap();
+            large.insert(&path).unwrap();
+        }
+        assert!(entries.insert("extra").is_err());
+        large.insert("extra").unwrap();
+
+        let mut paths = Plan::new(default_limits);
+        let component = "a".repeat(255);
+        let prefix = [component.as_str(); 4].join("/");
+        let path_length = prefix.len() + "/0000".len();
+        for index in 0..=default_limits.path_bytes / path_length {
+            let path = format!("{prefix}/{index:04}");
+            let result = paths.insert(&path);
+            assert_eq!(
+                result.is_ok(),
+                paths.path_bytes <= default_limits.path_bytes
+            );
+            large.insert(&path).unwrap();
+        }
+        assert!(paths.path_bytes > default_limits.path_bytes);
     }
 }

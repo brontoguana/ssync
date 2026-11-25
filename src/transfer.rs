@@ -309,7 +309,7 @@ struct Selected {
     name: String,
     is_dir: bool,
 }
-fn selected(path: &Path, sole_owned: bool) -> Result<Selected> {
+fn selected(path: &Path, sole_owned: bool, entry_limit: usize) -> Result<Selected> {
     let abs = fs::absolute(path)?;
     let name = abs
         .file_name()
@@ -322,7 +322,7 @@ fn selected(path: &Path, sole_owned: bool) -> Result<Selected> {
     // beneath its parent would incorrectly apply the child-mount prohibition.
     match Root::with_policy(&abs, sole_owned) {
         Ok(root) => Ok(Selected {
-            root,
+            root: root.with_entry_limit(entry_limit),
             path: String::new(),
             name,
             is_dir: true,
@@ -334,7 +334,7 @@ fn selected(path: &Path, sole_owned: bool) -> Result<Selected> {
                 return Err(directory_error);
             }
             Ok(Selected {
-                root: parent,
+                root: parent.with_entry_limit(entry_limit),
                 path: name.clone(),
                 name,
                 is_dir: false,
@@ -527,6 +527,7 @@ fn send(t: &Transfer, c: &mut Channel, connector: bool, stop: &AtomicBool) -> Re
     let mut skip = t.options.skip.clone();
     skip.extend(remote_skip);
     ensure!(skip.len() <= 64, "too many combined filters");
+    let limits = fs::TransferLimits::new(t.options.large_transfer);
     let mut sources = Vec::new();
     for path in &t.paths {
         let path = fs::absolute(path)
@@ -534,7 +535,7 @@ fn send(t: &Transfer, c: &mut Channel, connector: bool, stop: &AtomicBool) -> Re
             .context(Operation::ScanSource)?;
         if !path.components().any(|c| c.as_os_str() == fs::STATE) {
             sources.push(
-                selected(&path, t.options.sole_owned)
+                selected(&path, t.options.sole_owned, limits.entries)
                     .with_context(|| format!("opening source {:?}", path))
                     .context(Operation::ScanSource)
                     .with_context(|| {
@@ -563,7 +564,7 @@ fn send(t: &Transfer, c: &mut Channel, connector: bool, stop: &AtomicBool) -> Re
             s.name
         );
     }
-    let mut plan = Plan::default();
+    let mut plan = Plan::new(limits);
     let omitted = |p: &str| filtered(p, &skip);
     for s in &sources {
         plan.scan(
@@ -940,7 +941,7 @@ fn send_entry(
                 })?;
         }
     }
-    ensure!(*count <= fs::MAX_ENTRIES, "manifest entry limit");
+    ensure!(*count <= root.entry_limit(), "manifest entry limit");
     Ok(())
 }
 #[allow(clippy::too_many_arguments)]
@@ -1073,9 +1074,11 @@ fn receive(
     effective.options.dryrun |= remote_dry;
     effective.options.nodelete |= remote_nodelete;
     let t = &effective;
+    let limits = fs::TransferLimits::new(t.options.large_transfer);
     let root = Root::with_policy(&t.paths[0], t.options.sole_owned)
         .with_context(|| format!("opening destination root {:?}", t.paths[0]))
-        .context(Operation::OpenDestination)?;
+        .context(Operation::OpenDestination)?
+        .with_entry_limit(limits.entries);
     root.lock()
         .context(Operation::OpenDestination)
         .with_context(|| TransferEntry(String::new()))?;
@@ -1104,7 +1107,7 @@ fn receive(
                         .context(Operation::SetPermissions)?;
                     ensure!(seen.insert(path.clone()), "duplicate entry");
                     path_bytes += path.len();
-                    ensure!(path_bytes <= 8 * 1024 * 1024, "manifest path-byte limit");
+                    ensure!(path_bytes <= limits.path_bytes, "manifest path-byte limit");
                     if root
                         .password_path(&path)
                         .context(Operation::InspectDestination)?
@@ -1149,7 +1152,7 @@ fn receive(
                     authorize(&path, &roots, t.options.merge, &skip)?;
                     ensure!(seen.insert(path.clone()), "duplicate entry");
                     path_bytes += path.len();
-                    ensure!(path_bytes <= 8 * 1024 * 1024, "manifest path-byte limit");
+                    ensure!(path_bytes <= limits.path_bytes, "manifest path-byte limit");
                     check_hash(&hash)?;
                     ensure!(size <= MAX_FILE, FailureReason::FileTooLarge);
                     receive_file(
@@ -1173,7 +1176,7 @@ fn receive(
                 }
                 _ => bail!("unexpected transfer operation"),
             }
-            ensure!(seen.len() <= fs::MAX_ENTRIES, "manifest entry limit");
+            ensure!(seen.len() <= limits.entries, "manifest entry limit");
         }
         cancelled(stop)?;
         if !t.options.dryrun {
@@ -1650,7 +1653,7 @@ pub fn tree_hash(root: &Root, path: &str) -> Result<String> {
             return Ok(());
         }
         *count += 1;
-        ensure!(*count <= fs::MAX_ENTRIES, "hash entry limit");
+        ensure!(*count <= root.entry_limit(), "hash entry limit");
         let m = root.source_metadata(path).with_context(entry)?;
         h.update(&(path.len() as u64).to_be_bytes());
         h.update(path.as_bytes());

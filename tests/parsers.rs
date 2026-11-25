@@ -62,8 +62,8 @@ fn path_contract_and_large_inputs() {
 }
 
 #[test]
-fn local_directory_policy_qualifier() {
-    for strict in [false, true] {
+fn local_transfer_qualifiers() {
+    for enabled in [false, true] {
         for action in [
             "put",
             "get",
@@ -73,8 +73,9 @@ fn local_directory_policy_qualifier() {
             "backup-client",
         ] {
             let mut args = Vec::new();
-            if strict {
+            if enabled {
                 args.push("SoLe-OwNeD".to_string());
+                args.push("LaRgE-TrAnSfEr".to_string());
             }
             args.push(action.to_string());
             if !action.starts_with("backup-") {
@@ -87,7 +88,8 @@ fn local_directory_policy_qualifier() {
                 cli::Command::Backup(ssync::backup::Command::Client { options, .. }) => options,
                 _ => panic!("unexpected command"),
             };
-            assert_eq!(options.sole_owned, strict, "{action}");
+            assert_eq!(options.sole_owned, enabled, "{action}");
+            assert_eq!(options.large_transfer, enabled, "{action}");
         }
     }
 }
