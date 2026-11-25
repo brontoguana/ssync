@@ -1106,6 +1106,7 @@ fn receive(
                     root.validate_directory_mode(mode)
                         .context(Operation::SetPermissions)?;
                     ensure!(seen.insert(path.clone()), "duplicate entry");
+                    ensure!(seen.len() <= limits.entries, "manifest entry limit");
                     path_bytes += path.len();
                     ensure!(path_bytes <= limits.path_bytes, "manifest path-byte limit");
                     if root
@@ -1151,6 +1152,7 @@ fn receive(
                 } => (|| -> Result<()> {
                     authorize(&path, &roots, t.options.merge, &skip)?;
                     ensure!(seen.insert(path.clone()), "duplicate entry");
+                    ensure!(seen.len() <= limits.entries, "manifest entry limit");
                     path_bytes += path.len();
                     ensure!(path_bytes <= limits.path_bytes, "manifest path-byte limit");
                     check_hash(&hash)?;
@@ -1176,7 +1178,6 @@ fn receive(
                 }
                 _ => bail!("unexpected transfer operation"),
             }
-            ensure!(seen.len() <= limits.entries, "manifest entry limit");
         }
         cancelled(stop)?;
         if !t.options.dryrun {

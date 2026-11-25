@@ -11,6 +11,7 @@ Status: native implementation and actual application/security/lifecycle/manageme
 | Location | Numeric port, alias-to-port mapping, hostname/IP/IPv6 syntax according to recorded legacy contract, invalid values, documented omitted-root/current-directory behavior. |
 | Actions/directions | `put` listener + `get` connector; `get` listener + `put` connector; `offer` listener + `accept` connector; `accept` listener + `offer` connector. Record data sender separately from TCP initiator. Exercise valid connections in all four cases. |
 | Qualifiers | `merge`, `nodelete`, `dryrun`, `verify`, `verbose`, `force`/`noprompt`, `skip:` substring filters; overwrite/delete defaults match the frozen API/migration guide. Authentication/safety checks cannot be bypassed by force. |
+| Oversized transfers | Default sender and receiver limits remain independent. Refuse the first over-limit entry before modifying it. Verify that both opt-ins permit large ordinary transfers and backups, including saved commands, mirror cleanup and verification. |
 | Config/diagnostics | `.ssync` declarative transfer lists and safe concurrency, quoted/spaced/Unicode paths, `?`, version, file inspection, `hash`/`deep` output contract; clear nonzero status on worker and parser failure. |
 | File-only boundary | Reject script hooks, command execution, executable config and unknown wire operations. Shell metacharacters in names remain data. No subprocess-based transfer helpers or self-install execution. |
 

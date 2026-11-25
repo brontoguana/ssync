@@ -35,6 +35,7 @@
 - `tests/podman/security.py` / `tests/podman/proxy.py` — wrong-password, replay/tamper, metadata rejection, resume and scoped deletion tests.
 - `tests/podman/lifecycle.py` — continuous/concurrent operations, mutation, races, disk-full and cancellation.
 - `tests/podman/inputs.py` — PTY/password inputs, exact command pairs, config concurrency, throttling and IPv6.
+- `tests/podman/oversized.py` — independent sender/receiver manifest limits, saved-command opt-in, verification, mirroring and oversized backups.
 - `tests/podman/advanced.py` — many/deep/control-named files, link targets, rotation, quotas, insertion and killed/tampered resume.
 - `tests/podman/management.py` — disposable release-server fixture and atomic native management failure tests.
 - `tests/podman/large.py` — bounded multi-GiB profile, high-offset deltas and root-owned default installation.

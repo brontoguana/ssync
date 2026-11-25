@@ -10,7 +10,7 @@ Already installed? Run `sudo ssync update`.
 
 Native, password-authenticated file synchronization with fixed 200,000-byte deltas. Rust executable; no Java, Python or shell runtime required. Files and directories only: no script hooks or remote execution.
 
-Version **4.1.6** adds shared transfer IDs and clearer failure reports, including the file or directory involved when available. It remains compatible with 4.1.4 and 4.1.5. Restart listeners after updating.
+Version **4.1.7** adds the `large-transfer` qualifier for directory trees that exceed the default limits. Transfers within the default limits remain compatible with 4.1.4–4.1.6. Restart listeners after updating.
 
 Version **4.1.5** keeps one-shot listeners waiting after rejected handshakes, separates pending authentication from active transfer capacity, and stops receives before a write would exceed 99% of reported usable filesystem capacity. The cutoff is best effort across concurrent writers.
 
@@ -69,9 +69,9 @@ Receiver directories must already exist. Without `merge`, items retain their sou
 
 For a large directory tree, add `large-transfer` before the action on both peers.
 It lifts the local 10,000-entry limits for directory listings and transfer manifests,
-and the 8 MiB limit on total manifest path bytes. The option also works on individual
-`.ssync` transfer lines and on `backup-client` and `backup-server`. Large manifests
-can use more memory.
+and the 8 MiB limit on total manifest path bytes. Both peers need 4.1.7 or later.
+The option also works on individual `.ssync` transfer lines and on `backup-client`
+and `backup-server`. Large manifests can use more memory.
 
 ```bash
 ssync large-transfer offer MyDocuments ./docs
@@ -95,7 +95,7 @@ Passwords require 16+ Unicode characters; generated passwords use 24 uniformly s
 
 `.ssync` files contain quoted declarative transfer commands, one per line, and run concurrently. Only transfer operations are permitted; no shell expansion or execution. A shared-writable folder containing an ordinary `.ssync` configuration produces one warning and the commands still run. Use `ssync sole-owned file.ssync` to require trusted configuration directories and enable `sole-owned` for every local transfer in the file. Configuration files themselves must still be owned by the current user or root and cannot be group/other writable. Use `force` when unattended. `version`, `licenses`, `hash <directory>`, `deep <file>`, `scan <file>` and single-file inspection are local diagnostics. Hash output is BLAKE3 and intentionally differs from Java output.
 
-When both peers run 4.1.6, they log the same transfer ID, for example `P6T-FKF-8W4`. Look up that ID in either log to find the client or server that reported a failure and the affected entry, when known. A disconnect can prevent the error from reaching the other side. Versions 4.1.4 and 4.1.5 still transfer with a 4.1.6 peer and only the 4.1.6 peer logs the ID.
+When both peers run 4.1.6 or later, they log the same transfer ID, for example `P6T-FKF-8W4`. Look up that ID in either log to find the client or server that reported a failure and the affected entry, when known. A disconnect can prevent the error from reaching the other side. With a 4.1.4 or 4.1.5 peer, only the newer peer logs the ID.
 
 A busy destination means an exclusive lock is already held on that exact receiving directory. The receiving peer logs `Lock held by: PID …` when Linux provides the holder. The Linux kernel releases the lock when the locking descriptors close, including when the process is killed. Interrupted transfers can leave private `.ssync-state` partial files for the next attempt to resume.
 

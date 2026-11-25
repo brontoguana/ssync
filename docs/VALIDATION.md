@@ -294,3 +294,19 @@ The disposable rootless peer passed the exact README bootstrap, a public
 4.1.5-to-4.1.6 upgrade, already-current reporting and uninstall. The temporary
 egress network was removed. Raw receipts and smoke results are in ignored
 `target/release-416/`.
+
+
+## 4.1.7 oversized transfer release gate — 2026-11-25
+
+Rust 1.88 passed 40 native and parser tests with two optional strace probes
+ignored. Formatting and warnings-denied Clippy passed. The Linux x86_64 musl
+build reported `SSync v4.1.7` and had SHA-256
+`5e7e8f7ab667170bbf9945bc92c3bf17afc7e856139cae68dd96a51f875101e8`.
+
+The two-peer lab verified four scenarios with a 10,001-file tree. Receiver-only
+opt-in left the source directory limit active. Sender-only opt-in stopped before
+writing the first entry over the receiver's manifest limit. Enabling the option
+on both peers let a saved command and a backup transfer the entire tree and
+remove stale entries. Independent file hashes, modes and timestamps matched.
+The saved-command case also exercised both peers' verification passes. The
+manifest unit test covers the separate aggregate path-byte limit.

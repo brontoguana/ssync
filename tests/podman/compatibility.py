@@ -1,16 +1,33 @@
 #!/usr/bin/env python3
 """Check whether a released peer can transfer with the candidate as expected."""
 import argparse
+import re
 from pathlib import Path
 import application as app
 from application import lab
+
+
+def check_ids(candidate, previous, shared):
+    local_only = "ID appears in this peer's log only"
+    if shared:
+        pattern = r"Transfer ([A-Z2-9]{3}-[A-Z2-9]{3}-[A-Z2-9]{3}) authenticated"
+        candidate_ids = re.findall(pattern, candidate['out'])
+        previous_ids = re.findall(pattern, previous['out'])
+        assert len(candidate_ids) == 1 and previous_ids == candidate_ids, (candidate, previous)
+        assert local_only not in candidate['out'] and local_only not in previous['out']
+    else:
+        assert local_only in candidate['out'], candidate
+        assert local_only not in previous['out'], previous
 
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--previous',required=True,type=Path)
     parser.add_argument('--backup-previous',type=Path)
     parser.add_argument('--compatible', action='store_true', help='expect successful transfers with 4.1.4 or later')
+    parser.add_argument('--shared-diagnostics', action='store_true', help='expect shared IDs with 4.1.6 or later')
     args=parser.parse_args()
+    if args.shared_diagnostics and not args.compatible:
+        parser.error('--shared-diagnostics requires --compatible')
     app.setup(app.BINARY)
     a,b=lab.PEERS
     source='/work/app-tests/source'
@@ -36,8 +53,7 @@ def main():
             if args.compatible:
                 assert result['code']==remote['code']==0,(result,remote)
                 candidate, previous = (result, remote) if old_peer==server else (remote, result)
-                assert "ID appears in this peer's log only" in candidate['out'], candidate
-                assert "ID appears in this peer's log only" not in previous['out'], previous
+                check_ids(candidate, previous, args.shared_diagnostics)
                 check_contents(app.snapshot(b,dest+'/source'))
                 app.record('ordinary transfer succeeds with previous peer',old_peer=old_peer,server_sends=server_sends)
             else:
@@ -66,8 +82,9 @@ p=pathlib.Path(sys.argv[1]);p.write_text('@'+sys.argv[2]+'\\n'+sys.argv[3]+'='+s
                 if args.compatible:
                     assert result['code']==0,result
                     check_contents(app.snapshot(b,bay))
-                    candidate = result if old_peer==b else app.logs(job)
-                    assert "ID appears in this peer's log only" in candidate['out'], candidate
+                    server = app.logs(job)
+                    candidate, previous = (result, server) if old_peer==b else (server, result)
+                    check_ids(candidate, previous, args.shared_diagnostics)
                     app.record('backup transfer succeeds with previous peer',old_peer=old_peer)
                 else:
                     assert result['code']!=0,result
