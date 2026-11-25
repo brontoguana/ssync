@@ -15,6 +15,7 @@ pub struct Options {
     pub verbose: bool,
     pub force: bool,
     pub sole_owned: bool,
+    pub large_transfer: bool,
     pub chmod: Option<u32>,
     pub skip: Vec<String>,
 }
@@ -185,6 +186,7 @@ pub fn parse(args: &[String], env: Option<&str>) -> Result<Command> {
     while i < args.len() {
         match args[i].to_lowercase().as_str() {
             "sole-owned" => o.sole_owned = true,
+            "large-transfer" => o.large_transfer = true,
             "merge" => o.merge = true,
             "nodelete" => o.nodelete = true,
             "dryrun" => o.dryrun = true,
@@ -229,6 +231,10 @@ pub fn parse(args: &[String], env: Option<&str>) -> Result<Command> {
         )?));
     }
     if args.len() == i + 2 && matches!(args[i].to_lowercase().as_str(), "hash" | "deep" | "scan") {
+        ensure!(
+            !o.large_transfer,
+            "large-transfer requires a transfer command"
+        );
         return Ok(Command::Diagnostic(
             args[i].to_lowercase(),
             args[i + 1].clone().into(),
@@ -351,6 +357,8 @@ Qualifiers (before the action):
   force | noprompt                Skip the transfer confirmation prompt
   skip:substring                  Protect matching paths from copy/deletion
   sole-owned                      Reject local group/other-writable folders
+  large-transfer                  Lift local directory and manifest entry limits
+                                  and the manifest path-byte limit
   --chmod MODE | chmod:MODE        Override all copied file modes, e.g. 600/755
   --permissions MODE              Alias for --chmod; permissions:MODE also works
 
@@ -474,6 +482,7 @@ const HELP_CONFIG: &str = r#"Saved configurations:
   ssync sole-owned commands.ssync  Also require trusted local directories
 
   Lines contain arguments without a leading ssync; quote paths with spaces.
+  Use large-transfer before the action on both peers for oversized manifests.
   Example line: force nodelete put host:1500 ./docs
   Commands run concurrently. A failed command cancels sibling commands;
   avoid duplicate listeners when launching configurations from cron.
@@ -487,12 +496,12 @@ const HELP_BACKUP: &str = r#"Backup commands:
   ssync [qualifiers] backup-server [port] [file]
     Persistent upload-only server. Default port: 8425.
     Default file: /opt/backup-server.ssync
-    Qualifiers: verbose, sole-owned, --chmod MODE.
+    Qualifiers: verbose, sole-owned, large-transfer, --chmod MODE.
   ssync [qualifiers] backup-client [file]
     Upload each source to each server once, without a confirmation prompt.
     Default file: /opt/backup-client.ssync
-    Qualifiers: nodelete, dryrun, verify, verbose, sole-owned, skip:substring,
-    --chmod MODE. Uses the same permissions and link descriptions.
+    Qualifiers: nodelete, dryrun, verify, verbose, sole-owned, large-transfer,
+    skip:substring, --chmod MODE. Uses the same permissions and link descriptions.
 
   A missing backup file is created privately with examples; edit and rerun.
   Configured folders must already exist. Backups mirror by default; use

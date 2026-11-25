@@ -14,6 +14,28 @@ use std::{
 pub const STATE: &str = ".ssync-state";
 pub const MAX_ENTRIES: usize = 10_000;
 
+#[derive(Clone, Copy)]
+pub(crate) struct TransferLimits {
+    pub entries: usize,
+    pub path_bytes: usize,
+}
+
+impl TransferLimits {
+    pub fn new(large_transfer: bool) -> Self {
+        if large_transfer {
+            Self {
+                entries: usize::MAX,
+                path_bytes: usize::MAX,
+            }
+        } else {
+            Self {
+                entries: MAX_ENTRIES,
+                path_bytes: 8 * 1024 * 1024,
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum FileFailure {
     DestinationBusy,
@@ -363,6 +385,7 @@ pub struct Root {
     dir: File,
     pub path: PathBuf,
     sole_owned: bool,
+    entry_limit: usize,
     password_file: Option<PasswordFile>,
 }
 pub struct DirectoryMode {
@@ -490,14 +513,25 @@ impl Root {
             dir,
             path,
             sole_owned,
+            entry_limit: MAX_ENTRIES,
             password_file: PasswordFile::configured()?,
         })
     }
+    pub(crate) fn with_entry_limit(mut self, entry_limit: usize) -> Self {
+        self.entry_limit = entry_limit;
+        self
+    }
+
+    pub(crate) fn entry_limit(&self) -> usize {
+        self.entry_limit
+    }
+
     pub fn try_clone(&self) -> Result<Self> {
         Ok(Self {
             dir: self.dir.try_clone()?,
             path: self.path.clone(),
             sole_owned: self.sole_owned,
+            entry_limit: self.entry_limit,
             password_file: self.password_file.clone(),
         })
     }
@@ -718,7 +752,7 @@ impl Root {
             }
             valid(&name).with_context(|| format!("invalid entry {:?}", self.path.join(&name)))?;
             names.push(name);
-            ensure!(names.len() <= MAX_ENTRIES, "too many entries");
+            ensure!(names.len() <= self.entry_limit, "too many entries");
         }
         names.sort();
         Ok(names)
