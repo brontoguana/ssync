@@ -1,6 +1,6 @@
 # SSync validation and delivery history
 
-Current release: **4.1.6**. See [the transfer diagnostics release gate](#416-transfer-diagnostics-release-gate--2026-11-19).
+Current release: **4.1.7**. See [the oversized transfer release gate](#417-oversized-transfer-release-gate--2026-11-25).
 
 **SSync 4.0.0 is published and the public delivery smoke passes.** The public repository is [brontoguana/ssync](https://github.com/brontoguana/ssync), with [release v4.0.0](https://github.com/brontoguana/ssync/releases/tag/v4.0.0) pointing to source commit `decf099c73ee1df6424f35b87e7ca767853b1236`. On 2026-10-13, all six downloaded release assets matched the prepared files and SHA-256 manifest. `tests/podman/public_smoke.py --tag v4.0.0` downloaded and verified the public binary, installed it in the existing isolated peer, queried the real public updater (current/available 4.0.0, release details and explicit up-to-date result), and uninstalled it. No host files were mounted; the temporary egress network was removed. Raw evidence is in ignored `target/public-smoke.json` and `target/public-smoke-run.log`.
 
@@ -310,3 +310,24 @@ on both peers let a saved command and a backup transfer the entire tree and
 remove stale entries. Independent file hashes, modes and timestamps matched.
 The saved-command case also exercised both peers' verification passes. The
 manifest unit test covers the separate aggregate path-byte limit.
+
+
+The production-only build passed 99 container checks, including four oversized
+transfer cases, 13 ordinary, 14 permission, 20 link and 30 backup cases. Eighteen
+mixed-version checks covered ordinary uploads and downloads and backup with
+each of 4.1.4, 4.1.5 and 4.1.6. Mixed sessions with 4.1.6 used the same shared
+transfer ID at both ends.
+
+### 4.1.7 public delivery
+
+[SSync v4.1.7](https://github.com/brontoguana/ssync/releases/tag/v4.1.7) points
+to source commit `81ae194be170aca234c30f23f0e967442573adc3`, which includes
+[PR #1](https://github.com/brontoguana/ssync/pull/1). All six anonymous public
+downloads matched the prepared checksums and sizes. The binary archive
+contains the exact executable tested above, the README, licence and
+third-party notices.
+
+The disposable rootless peer passed the public README bootstrap, a native
+4.1.6-to-4.1.7 upgrade, already-current reporting and uninstall. The temporary
+egress network was removed. Raw results and receipts are in ignored
+`target/release-417/`.

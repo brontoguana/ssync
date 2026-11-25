@@ -2,6 +2,7 @@
 
 ## 4.1.7 — 2026-11-25
 
+- Publish the tested Linux x86_64 executable. Verify all six public downloads, the README installer and a real 4.1.6-to-4.1.7 upgrade in the disposable lab.
 - Add the local `large-transfer` qualifier to ordinary transfers, saved transfer commands and backups. It lifts the default limits of 10,000 entries per directory listing or transfer manifest and 8 MiB of aggregate manifest path bytes. Enable it independently on each peer for oversized transfers. The wire format is unchanged. Contributed by @gchristelis in PR #1.
 - Reject the first entry over the receiver's manifest limit before modifying its destination. Earlier entries may already have been copied.
 
